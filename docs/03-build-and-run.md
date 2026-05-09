@@ -5,7 +5,7 @@
 > how to confirm that each layer of the modification is functioning.
 >
 > If something fails during the build, jump to
-> [`05_TROUBLESHOOTING_new.md`](05_TROUBLESHOOTING_new.md) and find
+> [`05-troubleshooting.md`](05-troubleshooting.md) and find
 > the symptom; nine times out of ten it is one of the eleven issues
 > documented there.
 
@@ -225,7 +225,7 @@ Two things to verify in this output:
   `rs1 = a5`, `rs2 = a4`, `rs3 = a3`).
 
 If either is wrong, see
-[`05_TROUBLESHOOTING_new.md` Issues 1–2](05_TROUBLESHOOTING_new.md).
+[`05-troubleshooting.md` Issues 1–2](05-troubleshooting.md).
 
 ---
 
@@ -291,7 +291,7 @@ Expected: `GATE OK`.
 If this fails, the gate condition in
 `pass_recognize_attn::gate()` is wrong, or `TARGET_ATTN` is being
 forced on by some other code path. See
-[§4 of `02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md#4-the-pass-class--boilerplate)
+[§4 of `02-compiler-pass.md`](02-compiler-pass.md#4-the-pass-class--boilerplate)
 for what the gate must look like.
 
 ---
@@ -313,7 +313,7 @@ cat finale.c.*attnrec*
 The dump shows, for each loop the pass examined, which of the five
 matching conditions passed or failed and (on success) the
 `IFN_RISCV_ATTN` call that was emitted. The format is described in
-[§8 of `02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md#8-reading-the-gimple-dump).
+[§8 of `02-compiler-pass.md`](02-compiler-pass.md#8-reading-the-gimple-dump).
 
 This dump is *the* primary debugging tool while iterating on the
 pass. Make a habit of producing it whenever you change the matching
@@ -369,7 +369,7 @@ make -j$(nproc)
 ```
 
 This is what happens when you follow
-[`06_EXTENDING_TOOLCHAIN_new.md`](06_EXTENDING_TOOLCHAIN_new.md) to
+[`06-extending-toolchain.md`](06-extending-toolchain.md) to
 add a new pass source file.
 
 ---
@@ -399,6 +399,6 @@ all loops — read the dump for the reason.
 
 ---
 
-**Next:** [`04_PATCHES_AND_FILES_new.md`](04_PATCHES_AND_FILES_new.md) —
+**Next:** [`04-patches-and-files.md`](04-patches-and-files.md) —
 the exact list of files modified, the diff applied to each, and the
 reasoning behind every edit.

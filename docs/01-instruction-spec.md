@@ -246,7 +246,7 @@ conforming hardware implementation might:
 * dispatch them to a coprocessor with its own DMA engine.
 
 For the simulator-side prototype that will form Phase 4 of the
-project (see [`07_RESEARCH_CONTEXT_new.md` §5](07_RESEARCH_CONTEXT_new.md#5-future-work)),
+project (see [`07-research-context.md` §5](07-research-context.md#5-future-work)),
 a reasonable starting point is the straightforward four-phase
 implementation in `riscv-isa-sim/riscv/insns/attn.h` reading the
 four pointers from `rs1/rs2/rs3` and writing through `rd`.
@@ -374,7 +374,7 @@ call arguments, materialises each as a Pmode register (`Pmode` is
 `ECF_NOTHROW` (and *not* `ECF_LEAF`) tells GCC that the call cannot
 raise C++ exceptions but otherwise should be treated as having
 arbitrary memory effects. `ECF_LEAF` was tried and removed —
-see [`05_TROUBLESHOOTING_new.md` Issue 6](05_TROUBLESHOOTING_new.md#issue-6--ice-in-propagate_necessity-dce).
+see [`05-troubleshooting.md` Issue 6](05-troubleshooting.md#issue-6--ice-in-propagate_necessity-dce).
 
 ### 7.4 The path from C source to the bit pattern
 
@@ -479,6 +479,6 @@ Validated on :  rv64gc / lp64d, GNU/Newlib bare-metal, Ubuntu 24.04
 
 ---
 
-**Next:** [`02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md) —
+**Next:** [`02-compiler-pass.md`](02-compiler-pass.md) —
 how the compiler decides, automatically, that a given loop nest is
 "attention" and replaces it with this instruction.

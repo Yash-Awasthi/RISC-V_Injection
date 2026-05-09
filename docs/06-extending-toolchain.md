@@ -8,7 +8,7 @@
 
 The template is independent of `attn`. Read it as
 "every step you must take, in order, to add any new instruction".
-The eleven files of [`04_PATCHES_AND_FILES_new.md`](04_PATCHES_AND_FILES_new.md)
+The eleven files of [`04-patches-and-files.md`](04-patches-and-files.md)
 are the concrete instantiation of this generic recipe for
 `attn`.
 
@@ -232,7 +232,7 @@ For an R-type, three-operand pattern:
 
 For R4-type, add a fourth `mem:BLK` operand and `%3` in the assembly
 template, exactly like `attn` does
-([§4 of `04_PATCHES_AND_FILES_new.md`](04_PATCHES_AND_FILES_new.md#file-4--gccgccconfigriscvriscvmd)).
+([§4 of `04-patches-and-files.md`](04-patches-and-files.md#file-4--gccgccconfigriscvriscvmd)).
 
 Three rules of thumb that came directly out of this project's
 experience:
@@ -242,7 +242,7 @@ experience:
   result is a value in a register.
 * Use **`type "ghost"`** unless you know your instruction's
   pipeline cost model. `"unknown"` triggers an ICE in the RISC-V
-  scheduler ([Issue 7](05_TROUBLESHOOTING_new.md#issue-7--ice-in-riscv_sched_variable_issue)).
+  scheduler ([Issue 7](05-troubleshooting.md#issue-7--ice-in-riscv_sched_variable_issue)).
 * Always include a **predicate** (the `"TARGET_MYINSN"` string)
   that gates the pattern on the `-m` flag.
 
@@ -257,7 +257,7 @@ DEF_INTERNAL_FN (MYINSN, ECF_NOTHROW, NULL)
 ```
 
 Avoid `ECF_LEAF` if your instruction touches memory — see
-[Issue 6](05_TROUBLESHOOTING_new.md#issue-6--ice-in-propagate_necessity-dce).
+[Issue 6](05-troubleshooting.md#issue-6--ice-in-propagate_necessity-dce).
 
 ### File: `gcc/gcc/internal-fn.cc`
 
@@ -305,7 +305,7 @@ The user's source code is unchanged plain C.
 
 The two are not mutually exclusive — you can ship both. `attn` chose
 to ship only the idiom recogniser, on the rationale spelled out in
-[§2 of `02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md#2-design-philosophy-idiom-recognition-vs-explicit-intrinsics).
+[§2 of `02-compiler-pass.md`](02-compiler-pass.md#2-design-philosophy-idiom-recognition-vs-explicit-intrinsics).
 
 The remainder of this document assumes you want a recogniser pass.
 
@@ -447,7 +447,7 @@ Pattern after `attn`:
    up.
 
 For a longer worked example see `gcc/gcc/tree-ssa-attn.cc` and
-[`02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md).
+[`02-compiler-pass.md`](02-compiler-pass.md).
 
 ---
 
@@ -489,7 +489,7 @@ checks failed.
 ## 11. Common pitfalls (read these first)
 
 These are direct lessons from the eleven issues catalogued in
-[`05_TROUBLESHOOTING_new.md`](05_TROUBLESHOOTING_new.md). Reading
+[`05-troubleshooting.md`](05-troubleshooting.md). Reading
 this section once before you start saves hours of debugging.
 
 | Pitfall | Fix |
@@ -505,10 +505,10 @@ this section once before you start saves hours of debugging.
 | Header order: missing `fold-const.h` | Include before `tree-data-ref.h` |
 | Header order: missing `tree-into-ssa.h` | Required for `mark_virtual_operands_for_renaming` |
 | Pass matches but inserts in wrong basic block | Filter by `loop_depth(loop) == 1` |
-| Loop body still present after match | Expected — see [§7 of `02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md#7-why-the-loop-body-stays-and-what-removing-it-would-take) |
+| Loop body still present after match | Expected — see [§7 of `02-compiler-pass.md`](02-compiler-pass.md#7-why-the-loop-body-stays-and-what-removing-it-would-take) |
 
 ---
 
-**Next:** [`07_RESEARCH_CONTEXT_new.md`](07_RESEARCH_CONTEXT_new.md) —
+**Next:** [`07-research-context.md`](07-research-context.md) —
 how this project relates to existing work and where it can go from
 here.

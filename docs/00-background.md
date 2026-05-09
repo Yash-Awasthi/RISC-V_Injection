@@ -5,7 +5,7 @@
 > notion of what a Transformer is. Everything assumed elsewhere in
 > this repository is built up here from first principles.
 > A reader already comfortable with GCC internals and the RISC-V ISA
-> can skip to [`01_INSTRUCTION_SPEC_new.md`](01_INSTRUCTION_SPEC_new.md).
+> can skip to [`01-instruction-spec.md`](01-instruction-spec.md).
 
 ---
 
@@ -96,7 +96,7 @@ real:
 
 This project is concerned only with the first two. The third — the
 hardware semantics — is deliberately deferred (see
-[`07_RESEARCH_CONTEXT_new.md` §5](07_RESEARCH_CONTEXT_new.md#5-future-work)).
+[`07-research-context.md` §5](07-research-context.md#5-future-work)).
 
 The conceptual operation that `attn` represents is the
 Transformer attention layer:
@@ -206,7 +206,7 @@ through every one of them.
 Two things are worth highlighting:
 
 * **GIMPLE** is GCC’s machine-independent intermediate representation.
-  We will spend a lot of time there in [`02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md).
+  We will spend a lot of time there in [`02-compiler-pass.md`](02-compiler-pass.md).
 * **RTL** (Register Transfer Language) is GCC's lower, machine-aware
   IR. The mapping from "this is the `attn` operation" to "emit the
   string `attn ...` into the assembly file" lives in an RTL pattern
@@ -254,7 +254,7 @@ Decoding a 32-bit word into one of our `attn` instructions is
 straightforward: a CPU computes `(insn & MASK_ATTN) == MATCH_ATTN`.
 If that succeeds, the four register fields are read out at their
 fixed positions. The full worked example lives in
-[`01_INSTRUCTION_SPEC_new.md` §5](01_INSTRUCTION_SPEC_new.md#5-bit-level-worked-example).
+[`01-instruction-spec.md` §5](01-instruction-spec.md#5-bit-level-worked-example).
 
 ---
 
@@ -392,7 +392,7 @@ The exact insertion point matters:
 
 Position 179 is the sweet spot where loops are clean but still
 high-level. The detailed reasoning is in
-[`02_COMPILER_PASS_new.md` §3](02_COMPILER_PASS_new.md#3-where-the-pass-runs-and-why).
+[`02-compiler-pass.md` §3](02-compiler-pass.md#3-where-the-pass-runs-and-why).
 
 ### 7.4 SCEV — scalar evolution
 
@@ -426,7 +426,7 @@ much more naturally. The high-level story is:
 1. **Encoding (binutils)** — we picked the `custom-0` opcode slot,
    chose `funct3 = funct2 = 0`, and registered `attn` as an R4-type
    instruction so that the assembler and `objdump` both know it
-   (see [`04_PATCHES_AND_FILES_new.md`](04_PATCHES_AND_FILES_new.md), files 1–2).
+   (see [`04-patches-and-files.md`](04-patches-and-files.md), files 1–2).
 2. **Backend (GCC RTL)** — we declared an `UNSPEC` and a
    `define_insn` so the compiler knows how to *print* the assembly
    for `attn` (file 4).
@@ -436,7 +436,7 @@ much more naturally. The high-level story is:
 4. **Pattern recognition (GCC middle end)** — the `attnrec` pass
    walks every loop, checks five matching conditions, and replaces
    the matched nest with an `IFN_RISCV_ATTN` call (file 11; deeply
-   covered in [`02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md)).
+   covered in [`02-compiler-pass.md`](02-compiler-pass.md)).
 5. **Build glue and the `-mattn` flag** — the glue files (`passes.def`,
    `tree-pass.h`, `Makefile.in`, `riscv.opt`, `riscv.cc`) wire the
    new pass into GCC's build and gating logic (files 3, 7–10).
@@ -446,5 +446,5 @@ detail.
 
 ---
 
-**Next:** [`01_INSTRUCTION_SPEC_new.md`](01_INSTRUCTION_SPEC_new.md)
+**Next:** [`01-instruction-spec.md`](01-instruction-spec.md)
 — the exact specification of the `attn` instruction.

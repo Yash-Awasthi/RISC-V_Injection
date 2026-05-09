@@ -22,16 +22,16 @@ accelerator; it is out of scope for the current artefact.
 
 **`attn`.** The custom RISC-V instruction defined by this project.
 R4-type, 32 bits, opcode-slot `custom-0`. Specified in detail in
-[`01_INSTRUCTION_SPEC_new.md`](01_INSTRUCTION_SPEC_new.md).
+[`01-instruction-spec.md`](01-instruction-spec.md).
 
 **`attnrec`.** The name of the GIMPLE pass that recognises SDPA and
 emits `IFN_RISCV_ATTN`. Lives in `gcc/gcc/tree-ssa-attn.cc`.
-See [`02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md).
+See [`02-compiler-pass.md`](02-compiler-pass.md).
 
 **Attention (in deep learning).** The operation
 `softmax(QKᵀ/√d)V`. Core component of every Transformer block.
 Background in
-[§6 of `00_BACKGROUND_new.md`](00_BACKGROUND_new.md#6-what-is-attention-in-a-transformer).
+[§6 of `00-background.md`](00-background.md#6-what-is-attention-in-a-transformer).
 
 ## B
 
@@ -42,7 +42,7 @@ control-flow graph is built from.
 **Binutils.** The GNU package containing the assembler (GAS),
 linker (LD), and object utilities (`objdump`, `nm`, `ar`, …).
 This project modifies two binutils files (Files 1 and 2 in
-[`04_PATCHES_AND_FILES_new.md`](04_PATCHES_AND_FILES_new.md)).
+[`04-patches-and-files.md`](04-patches-and-files.md)).
 
 **Builtin (GCC).** A function name like `__builtin_riscv_attn`
 that the compiler recognises specially and lowers directly to
@@ -72,7 +72,7 @@ toolchain produced by this project is a cross-compiler:
 statements whose results are not used. Without precautions, DCE
 will eliminate an `IFN_RISCV_ATTN` call whose return value is
 unused. The pass marks the call **volatile** to prevent this
-(see [Issue 6](05_TROUBLESHOOTING_new.md#issue-6--ice-in-propagate_necessity-dce)).
+(see [Issue 6](05-troubleshooting.md#issue-6--ice-in-propagate_necessity-dce)).
 
 **DECLARE_INSN.** A binutils macro that registers an instruction in
 the disassembler's table. Must appear inside the
@@ -96,7 +96,7 @@ Pmode is `DI` on RV64 and `SI` on RV32. Used in `riscv.md`.
 **`-mattn`.** The compiler flag added by this project. Defines the
 preprocessor macro `TARGET_ATTN`. Gates the `attnrec` pass and the
 `define_insn`'s predicate. See
-[§8 of `01_INSTRUCTION_SPEC_new.md`](01_INSTRUCTION_SPEC_new.md#8-the--mattn-compile-time-flag).
+[§8 of `01-instruction-spec.md`](01-instruction-spec.md#8-the--mattn-compile-time-flag).
 
 **ECF_LEAF / ECF_NOTHROW.** GCC call-property flags. `ECF_LEAF`
 asserts the call does not access caller's memory. `ECF_NOTHROW`
@@ -131,7 +131,7 @@ instruction word that further classify an opcode. `attn` uses
 
 **GAS (GNU Assembler).** The `as` program in binutils. Reads the
 opcode table populated in File 2 of
-[`04_PATCHES_AND_FILES_new.md`](04_PATCHES_AND_FILES_new.md).
+[`04-patches-and-files.md`](04-patches-and-files.md).
 
 **GCC.** The GNU Compiler Collection. The C compiler this project
 modifies. Version 15.2.0.
@@ -173,7 +173,7 @@ language-level form. Declared in `internal-fn.def`, expanded in
 **ICE (Internal Compiler Error).** GCC's term for "the compiler
 itself crashed". An ICE is always a bug in the compiler, never
 just a user error. See
-[`05_TROUBLESHOOTING_new.md`](05_TROUBLESHOOTING_new.md) for the ICEs
+[`05-troubleshooting.md`](05-troubleshooting.md) for the ICEs
 encountered by this project.
 
 **ISA (Instruction Set Architecture).** The contract between
@@ -338,5 +338,5 @@ on RV64.
 
 **End of documentation set.**
 
-Return to the [README](README_new.md) for the high-level overview,
+Return to the [README](../README.md) for the high-level overview,
 or jump to any document via the suggested reading orders there.

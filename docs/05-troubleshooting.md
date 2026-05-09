@@ -98,7 +98,7 @@ In `tree-ssa-attn.cc`, ensure `fold-const.h` is included **before**
 ```
 
 The full required ordering is given in
-[§ "File 11" of `04_PATCHES_AND_FILES_new.md`](04_PATCHES_AND_FILES_new.md#file-11--gccgcctree-ssa-attncc-new-file).
+[§ "File 11" of `04-patches-and-files.md`](04-patches-and-files.md#file-11--gccgcctree-ssa-attncc-new-file).
 
 ---
 
@@ -497,7 +497,7 @@ stage.
 
 * In freshly-built compilers, the flags are not necessary.
 * In the documented verification recipe (§6 of
-  [`03_BUILD_AND_RUN_new.md`](03_BUILD_AND_RUN_new.md)),
+  [`03-build-and-run.md`](03-build-and-run.md)),
   `-fno-schedule-insns -fno-schedule-insns2` are kept as a
   belt-and-braces measure so that the recipe also works on
   partially-rebuilt trees.
@@ -526,9 +526,9 @@ project had to engage with. The exercise is therefore a useful
 crash course in compiler-internals practice; a reader who works
 through this list should be comfortable adding their *own* custom
 instruction following the recipe in
-[`06_EXTENDING_TOOLCHAIN_new.md`](06_EXTENDING_TOOLCHAIN_new.md).
+[`06-extending-toolchain.md`](06-extending-toolchain.md).
 
 ---
 
-**Next:** [`06_EXTENDING_TOOLCHAIN_new.md`](06_EXTENDING_TOOLCHAIN_new.md) —
+**Next:** [`06-extending-toolchain.md`](06-extending-toolchain.md) —
 generic template for adding your own custom instruction.

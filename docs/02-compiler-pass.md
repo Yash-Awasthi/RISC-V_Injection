@@ -2,7 +2,7 @@
 
 > **Audience.** A reader who understands the basics of GIMPLE and
 > the GCC pass pipeline (covered in
-> [`00_BACKGROUND_new.md` §7](00_BACKGROUND_new.md#7-gimple-ssa-and-the-gcc-pass-pipeline))
+> [`00-background.md` §7](00-background.md#7-gimple-ssa-and-the-gcc-pass-pipeline))
 > and now wants to know exactly what the `attnrec` pass does and why
 > it is correct.
 
@@ -92,7 +92,7 @@ is via an **intrinsic** or **builtin** — the user writes
 `__builtin_riscv_attn(O, Q, K, V)` and the compiler emits one
 machine instruction. That approach is mechanically simpler, and an
 earlier prototype of this project did exactly that (see
-[`07_RESEARCH_CONTEXT_new.md` §3](07_RESEARCH_CONTEXT_new.md#3-comparison-with-the-earlier-prototype)).
+[`07-research-context.md` §3](07-research-context.md#3-comparison-with-the-earlier-prototype)).
 
 The current project deliberately rejects that approach in favour of
 **automatic idiom recognition** for three reasons:
@@ -158,7 +158,7 @@ A common failure mode in early development was inserting the pass
 **inside** the Graphite `PUSH_INSERT_PASSES_WITHIN` block. That
 silently places the pass in the wrong driver scope; it is registered
 but never executed. See
-[`05_TROUBLESHOOTING_new.md` Issue 8](05_TROUBLESHOOTING_new.md#issue-8--pass-inserted-inside-graphite-block).
+[`05-troubleshooting.md` Issue 8](05-troubleshooting.md#issue-8--pass-inserted-inside-graphite-block).
 
 ---
 
@@ -373,7 +373,7 @@ gsi_insert_after (&gsi, call, GSI_NEW_STMT);
 
 The four arguments will, after RTL expansion, end up in the four
 register operands of the `attn` instruction in the order required by
-[§4 of `01_INSTRUCTION_SPEC_new.md`](01_INSTRUCTION_SPEC_new.md#4-operand-convention-and-abi):
+[§4 of `01-instruction-spec.md`](01-instruction-spec.md#4-operand-convention-and-abi):
 
 ```
                 IFN_RISCV_ATTN (O, Q, K, V)         ← GIMPLE
@@ -391,7 +391,7 @@ register operands of the `attn` instruction in the order required by
 
 The lowering from GIMPLE to RTL is handled by `expand_RISCV_ATTN`,
 which is two dozen lines in `internal-fn.cc` and is shown in
-[§7.3 of `01_INSTRUCTION_SPEC_new.md`](01_INSTRUCTION_SPEC_new.md#73-gcc--internal-function).
+[§7.3 of `01-instruction-spec.md`](01-instruction-spec.md#73-gcc--internal-function).
 
 ---
 
@@ -480,7 +480,7 @@ succeeds normally with no `attn` emitted.
 
 The dump is the single most useful tool when adapting the matcher
 for a new C source style; see
-[`06_EXTENDING_TOOLCHAIN_new.md`](06_EXTENDING_TOOLCHAIN_new.md)
+[`06-extending-toolchain.md`](06-extending-toolchain.md)
 for guidance on extending the matching logic.
 
 ---
@@ -522,7 +522,7 @@ was not designed for. Known patterns it currently rejects:
   them. The fused source (one outer `i` loop containing all four
   phases) succeeds; the unfused style fails Check 4 because no
   single loop nest sees Q, K, *and* V together. (Issue 10 in
-  [`05_TROUBLESHOOTING_new.md`](05_TROUBLESHOOTING_new.md#issue-10--three-separate-loop-nests-no-single-outer-loop)
+  [`05-troubleshooting.md`](05-troubleshooting.md#issue-10--three-separate-loop-nests-no-single-outer-loop)
   documents how the pass was eventually adapted to scan the whole
   function rather than just the matched loop body.)
 * **Multi-head attention written as a single loop over all heads**
@@ -554,6 +554,6 @@ during the project's pre-Phase-4 lifetime.
 
 ---
 
-**Next:** [`03_BUILD_AND_RUN_new.md`](03_BUILD_AND_RUN_new.md) — how to
+**Next:** [`03-build-and-run.md`](03-build-and-run.md) — how to
 actually build the toolchain and verify the layers above are
 working.

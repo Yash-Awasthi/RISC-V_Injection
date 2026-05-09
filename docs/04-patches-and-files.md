@@ -50,7 +50,7 @@ Inserted immediately above the first `#define MATCH_ADD` line:
 ```
 
 The numbers come from the bit-field layout in
-[§3 of `01_INSTRUCTION_SPEC_new.md`](01_INSTRUCTION_SPEC_new.md#3-encoding-constants-match-and-mask).
+[§3 of `01-instruction-spec.md`](01-instruction-spec.md#3-encoding-constants-match-and-mask).
 `MATCH_ATTN` has the locked sub-fields (opcode, funct3, funct2)
 in their fixed positions; `MASK_ATTN` is `1` precisely on those
 locked sub-fields and `0` everywhere else.
@@ -201,7 +201,7 @@ Three subtleties live in this small pattern:
   `riscv_sched_variable_issue`; `"ghost"` is the canonical type for
   scheduling barriers and is exactly right for an opaque coprocessor
   call. See
-  [`05_TROUBLESHOOTING_new.md` Issue 7](05_TROUBLESHOOTING_new.md#issue-7--ice-in-riscv_sched_variable_issue).
+  [`05-troubleshooting.md` Issue 7](05-troubleshooting.md#issue-7--ice-in-riscv_sched_variable_issue).
 
 Verify:
 
@@ -229,7 +229,7 @@ properties:
 * note the *absence* of `ECF_LEAF` — leaf functions are assumed not
   to touch memory, which contradicts our four-pointer
   read/write contract and triggers a DCE ICE
-  (see [`05_TROUBLESHOOTING_new.md` Issue 6](05_TROUBLESHOOTING_new.md#issue-6--ice-in-propagate_necessity-dce)).
+  (see [`05-troubleshooting.md` Issue 6](05-troubleshooting.md#issue-6--ice-in-propagate_necessity-dce)).
 
 The third argument `NULL` says we have no fold/simplify hook for the
 function — there is no algebraic simplification that applies.
@@ -400,7 +400,7 @@ This is the only **new** file in the modification. It implements the
 > (one `gcc` directory) causes the build to fail with
 > `tree-ssa-attn.o: No such file or directory`, because the build
 > system looks under the inner `gcc/`. See
-> [`05_TROUBLESHOOTING_new.md` Issue 1](05_TROUBLESHOOTING_new.md#issue-1--tree-ssa-attno-no-such-file-or-directory).
+> [`05-troubleshooting.md` Issue 1](05-troubleshooting.md#issue-1--tree-ssa-attno-no-such-file-or-directory).
 
 The file's required headers, in the order GCC expects them:
 
@@ -449,7 +449,7 @@ check from the original methodology was replaced with a count of
 loops carrying madd reductions.
 
 The full source is the single best reference for the pass body and
-should be read alongside [`02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md).
+should be read alongside [`02-compiler-pass.md`](02-compiler-pass.md).
 
 ---
 
@@ -476,6 +476,6 @@ This is essentially the "responsibilities matrix" for the project.
 
 ---
 
-**Next:** [`05_TROUBLESHOOTING_new.md`](05_TROUBLESHOOTING_new.md) —
+**Next:** [`05-troubleshooting.md`](05-troubleshooting.md) —
 every error, ICE, and silent misbehaviour encountered during the
 project, with the root cause and the fix.

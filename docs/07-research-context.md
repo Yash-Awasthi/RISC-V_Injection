@@ -8,9 +8,9 @@
 
 This document does *not* re-explain the engineering — it positions
 it. The relevant engineering details live in
-[`01_INSTRUCTION_SPEC_new.md`](01_INSTRUCTION_SPEC_new.md),
-[`02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md), and
-[`04_PATCHES_AND_FILES_new.md`](04_PATCHES_AND_FILES_new.md).
+[`01-instruction-spec.md`](01-instruction-spec.md),
+[`02-compiler-pass.md`](02-compiler-pass.md), and
+[`04-patches-and-files.md`](04-patches-and-files.md).
 
 ---
 
@@ -65,7 +65,7 @@ The research interest of the toolchain-only result is twofold:
   resulting infrastructure is a usable substrate for *any* future
   fused primitive (LayerNorm, RMSNorm, rotary embeddings, fused
   feed-forward), as templated in
-  [`06_EXTENDING_TOOLCHAIN_new.md`](06_EXTENDING_TOOLCHAIN_new.md).
+  [`06-extending-toolchain.md`](06-extending-toolchain.md).
 * It demonstrates idiom-recognition feasibility for a workload an
   order of magnitude more structured than the standard examples
   (`memcpy`, `strlen`, dot-product). The matcher imposes five
@@ -216,8 +216,8 @@ mathematical operation including a transcendental function, is
 the artefact this repository documents.
 
 A modest secondary contribution is the **methodological corpus**
-distilled in [`05_TROUBLESHOOTING_new.md`](05_TROUBLESHOOTING_new.md)
-and [`06_EXTENDING_TOOLCHAIN_new.md`](06_EXTENDING_TOOLCHAIN_new.md):
+distilled in [`05-troubleshooting.md`](05-troubleshooting.md)
+and [`06-extending-toolchain.md`](06-extending-toolchain.md):
 eleven distinct GCC-internals issues identified, root-caused, and
 fixed, then generalised into a recipe for the *next* fused
 primitive.
@@ -247,7 +247,7 @@ attention_reference (proc, o_ptr, q_ptr, k_ptr, v_ptr,
 ```
 
 This unblocks the **equivalence harness** described in
-[§7 of `02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md#7-why-the-loop-body-stays-and-what-removing-it-would-take).
+[§7 of `02-compiler-pass.md`](02-compiler-pass.md#7-why-the-loop-body-stays-and-what-removing-it-would-take).
 
 ### 5.2 Equivalence-driven dead-code elimination
 
@@ -279,7 +279,7 @@ predicate is `attn`-specific. Re-instantiating it for:
   with a transcendental in between. Structurally similar to SDPA.
 
 would each be a few hundred lines of pass code following the
-template in [`06_EXTENDING_TOOLCHAIN_new.md`](06_EXTENDING_TOOLCHAIN_new.md).
+template in [`06-extending-toolchain.md`](06-extending-toolchain.md).
 
 ### 5.5 Robustness studies
 
@@ -308,7 +308,7 @@ Honesty about what this work does *not* do strengthens the claim.
 | Limitation | Mitigation / why it is acceptable |
 |------------|------------------------------------|
 | The hardware semantics of `attn` are not implemented. | This is by design — the project's contribution is the toolchain side. Phase 4 (§5.1) closes this gap. |
-| The matcher recognises only *one* canonical SDPA shape (fused outer loop). | False negatives on alternative shapes are detected via the GIMPLE dump and produce no incorrect code. Adapting the source to the recognised shape is documented in [§9.2 of `02_COMPILER_PASS_new.md`](02_COMPILER_PASS_new.md#92-completeness-false-negatives). |
+| The matcher recognises only *one* canonical SDPA shape (fused outer loop). | False negatives on alternative shapes are detected via the GIMPLE dump and produce no incorrect code. Adapting the source to the recognised shape is documented in [§9.2 of `02-compiler-pass.md`](02-compiler-pass.md#92-completeness-false-negatives). |
 | Test coverage is one program (`finale.c`) and one shape (`N = d = 32`). | A robustness study (§5.5) is the appropriate response. |
 | The five matching conditions are syntactic; they do not constitute a semantic proof. | Standard for idiom recogniser passes. The volatile call is left alongside the original loop body so that even a false positive is non-catastrophic until Phase 4 ships. |
 | No measurement of compile-time overhead. | The pass's worst-case work is `O(F)` in the number of basic blocks/statements per function, with early-exit on each of the five checks. Overhead is expected to be sub-percentage of total compile time; measuring it is straightforward future work. |
@@ -450,5 +450,5 @@ attention-accelerator ASIC papers.
 
 ---
 
-**Next:** [`08_GLOSSARY_new.md`](08_GLOSSARY_new.md) — every term and
+**Next:** [`08-glossary.md`](08-glossary.md) — every term and
 acronym used across this documentation set, defined.
