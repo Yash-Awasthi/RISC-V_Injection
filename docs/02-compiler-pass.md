@@ -441,8 +441,8 @@ flags. The most useful invocation for debugging is:
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
     -mattn -O2 \
     -fdump-tree-attnrec-details \
-    -c finale.c -o finale.o
-cat finale.c.*attnrec*
+    -c sdpa_test.c -o sdpa_test.o
+cat sdpa_test.c.*attnrec*
 ```
 
 A successful run produces output structured roughly like:

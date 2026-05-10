@@ -311,8 +311,8 @@ call whose timing model is not yet committed.
 The pass registers cleanly, the build succeeds, and yet:
 
 ```bash
-gcc -mattn -O2 -fdump-tree-attnrec-details -c finale.c -o finale.o
-ls finale.c.*attnrec*
+gcc -mattn -O2 -fdump-tree-attnrec-details -c sdpa_test.c -o sdpa_test.o
+ls sdpa_test.c.*attnrec*
 # (no such file or directory)
 ```
 
@@ -442,7 +442,7 @@ for (int i = 0; i < N; i++) {
 }
 ```
 
-`finale.c` in this repository is exactly this shape.
+`sdpa_test.c` in this repository is exactly this shape.
 
 **Part B — broaden the load/store base scan to the whole function.**
 Instead of collecting only the matched loop's loads, the pass walks

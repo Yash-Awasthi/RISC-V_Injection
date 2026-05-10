@@ -150,7 +150,7 @@ proposed accelerator is expected either to:
   in TLB/DMA descriptors.
 
 The compiler-side prototype in this repository simply assumes the
-hardware "knows" the shape; the test program `finale.c` uses fixed
+hardware "knows" the shape; the test program `sdpa_test.c` uses fixed
 `N = d = 32`.
 
 A representative emitted instruction:
@@ -381,7 +381,7 @@ see [`05-troubleshooting.md` Issue 6](05-troubleshooting.md#issue-6--ice-in-prop
 Putting the four entries together:
 
 ```
-finale.c                           ┐
+sdpa_test.c                           ┐
                                    │ GCC front end
       ▼                            │
 GIMPLE  loop nest                  │
@@ -444,15 +444,15 @@ Usage examples:
 
 ```bash
 # enabled — pass runs, attn may be emitted
-riscv64-unknown-elf-gcc -mattn -O2 -S finale.c -o finale.s
+riscv64-unknown-elf-gcc -mattn -O2 -S sdpa_test.c -o sdpa_test.s
 
 # disabled — pass gate returns false, no attn emitted
-riscv64-unknown-elf-gcc       -O2 -S finale.c -o finale.s
+riscv64-unknown-elf-gcc       -O2 -S sdpa_test.c -o sdpa_test.s
 
 # emitting GIMPLE dump to inspect the pass behaviour
 riscv64-unknown-elf-gcc -mattn -O2 -fdump-tree-attnrec-details \
-    -c finale.c -o finale.o
-cat finale.c.*attnrec*
+    -c sdpa_test.c -o sdpa_test.o
+cat sdpa_test.c.*attnrec*
 ```
 
 ---

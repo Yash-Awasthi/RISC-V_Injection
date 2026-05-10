@@ -110,7 +110,7 @@ format produced by `riscv64-unknown-elf-gcc`.
 
 ## F
 
-**`finale.c`.** The reference SDPA implementation in this
+**`sdpa_test.c`.** The reference SDPA implementation in this
 repository, written as a fused outer loop. The file the matcher is
 known to recognise.
 

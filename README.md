@@ -1,10 +1,16 @@
 <p align="center">
   <a href="./README.md"><strong>Overview</strong></a> ·
+  <a href="./docs/README.md">Docs index</a> ·
+  <a href="./demo/README.md">Reference demo</a> ·
+  <a href="./scripts/README.md">Generic pipeline</a>
+</p>
+
+<p align="center">
   <a href="./docs/00-background.md">Background</a> ·
   <a href="./docs/01-instruction-spec.md">Instruction Spec</a> ·
   <a href="./docs/02-compiler-pass.md">Compiler Pass</a> ·
-  <a href="./docs/03-build-and-run.md">Build & Run</a> ·
-  <a href="./docs/04-patches-and-files.md">Patches & Files</a> ·
+  <a href="./docs/03-build-and-run.md">Build &amp; Run</a> ·
+  <a href="./docs/04-patches-and-files.md">Patches &amp; Files</a> ·
   <a href="./docs/05-troubleshooting.md">Troubleshooting</a> ·
   <a href="./docs/06-extending-toolchain.md">Extending</a> ·
   <a href="./docs/07-research-context.md">Research Context</a> ·
@@ -18,6 +24,95 @@
 > lower it to a single hardware instruction — **without inline
 > assembly, without `__builtin_*` intrinsics, and without `.insn`
 > directives**.
+
+---
+
+## How to run the program
+
+This section is the shortest possible recipe for going from a fresh
+clone to a verified `attn` instruction in compiler output. For the
+narrative version with troubleshooting, see
+[`docs/03-build-and-run.md`](docs/03-build-and-run.md).
+
+### 0. Prerequisites (once per machine)
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+    autoconf automake autotools-dev curl python3 python3-pip python3-tomli \
+    libmpc-dev libmpfr-dev libgmp-dev gawk build-essential bison flex \
+    texinfo gperf libtool patchutils bc zlib1g-dev libexpat-dev ninja-build \
+    git cmake libglib2.0-dev libslirp-dev libncurses-dev
+```
+
+Disk: ≥ 12 GiB free. RAM: ≥ 8 GiB. Build time: 45–90 min on 8 cores.
+Tested on Ubuntu 24.04 / WSL2.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Yash-Awasthi/CD.git riscv-attn
+cd riscv-attn
+```
+
+### 2. Configure and build the modified toolchain
+
+```bash
+./configure --prefix=$HOME/riscv-install \
+            --with-arch=rv64gc --with-abi=lp64d --disable-gdb
+make -j$(nproc) 2>&1 | tee build.log
+```
+
+Produces `riscv64-unknown-elf-{gcc,as,objdump,…}` under
+`$HOME/riscv-install/bin/`.
+
+### 3. Verify the assembler accepts `attn` (Layer 1)
+
+```bash
+echo '_start: attn a3, a0, a1, a2' > /tmp/t.S
+$HOME/riscv-install/bin/riscv64-unknown-elf-as /tmp/t.S -o /tmp/t.o
+$HOME/riscv-install/bin/riscv64-unknown-elf-objdump -d /tmp/t.o | grep attn
+# Expect: ... 0000000b ... attn  a3,a0,a1,a2
+```
+
+### 4. Verify GCC emits `attn` automatically from plain C (Layer 2)
+
+```bash
+$HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
+    -mattn -O2 \
+    -fno-schedule-insns -fno-schedule-insns2 \
+    -S demo/sdpa_test.c -o /tmp/sdpa_test.s
+grep -n '\battn\b' /tmp/sdpa_test.s
+# Expect: a single line such as:
+#   ...:        attn    a3,a0,a1,a2
+```
+
+### 5. Run the full verification harness (recommended)
+
+```bash
+chmod +x demo/verify_attn.sh
+./demo/verify_attn.sh demo/sdpa_test.c
+# Expect: all PASS lines and a final “verification complete”.
+```
+
+### 6. Add *another* custom instruction (optional)
+
+The `scripts/` directory is a generic pipeline that turns either a
+JSON config or a plain C file into a fully patched toolchain tree
+that recognises a *new* custom mnemonic. End-to-end recipe:
+
+```bash
+# Sanity test (does NOT need a built toolchain — only the source tree):
+python3 scripts/tests/test_pipeline.py        # 7/7 should pass
+
+# Real use: from a JSON config (Way 1)
+python3 scripts/customrv.py from-config scripts/configs/fds.json --apply --build
+
+# Real use: from a C source file (Way 2 — recommended)
+python3 scripts/customrv.py from-c scripts/examples/fma_demo.c --apply --build
+```
+
+See [`scripts/README.md`](scripts/README.md) for the full surface.
 
 ---
 
@@ -53,6 +148,39 @@ attn  a3, a0, a1, a2     # rd = O,  rs1 = Q,  rs2 = K,  rs3 = V
 
 ---
 
+## Repository layout
+
+```
+CD/
+├── README.md                 ← you are here (overview + how to run)
+├── docs/                     ← deep-dive documentation set
+│   └── README.md             ← documentation index (audience guide)
+├── demo/                     ← reference attn demonstration
+│   ├── README.md
+│   ├── sdpa_test.c           ← canonical SDPA test source
+│   ├── sdpa_test.s           ← expected assembly output
+│   ├── sdpa_test.c.179t.attnrec  ← GIMPLE dump after pass #179
+│   └── verify_attn.sh        ← end-to-end verification harness
+├── scripts/                  ← generic “add a new custom RISC-V insn” pipeline
+│   ├── README.md
+│   ├── customrv.py           ← unified driver
+│   ├── 01_find_opcodes.py …  ← stage-by-stage helpers
+│   ├── configs/              ← Way-1 JSON configs (worked examples)
+│   ├── examples/             ← Way-2 C input files (worked examples)
+│   ├── lib/                  ← shared Python library (analyser, patcher, …)
+│   ├── templates/            ← matcher fragments + tree-ssa skeleton
+│   └── tests/                ← sanity tests + generated C tests
+├── gcc/                      ← upstream GCC 15.2 source tree (modified) — DO NOT TOUCH MANUALLY
+└── binutils/                 ← upstream binutils 2.46 source tree (modified) — DO NOT TOUCH MANUALLY
+```
+
+The `gcc/` and `binutils/` directories are vendored upstream sources
+with the project's modifications applied in place. Every change in
+those trees is enumerated, with line numbers and rationales, in
+[`docs/04-patches-and-files.md`](docs/04-patches-and-files.md).
+
+---
+
 ## What this project actually contains
 
 This repository is a fork of [`riscv-gnu-toolchain`](https://github.com/riscv-collab/riscv-gnu-toolchain).
@@ -72,14 +200,14 @@ On top of the upstream sources, it adds:
    (`binutils/include/opcode/riscv-opc.h`,
    `binutils/opcodes/riscv-opc.c`).
 
-The deliberate constraint of the project is that **the user’s C code
+The deliberate constraint of the project is that **the user's C code
 is unchanged**. There is no header to include, no intrinsic to call,
 no inline-asm block to write. The detection happens automatically as
 part of normal `-O2` compilation, gated only by `-mattn`.
 
 ---
 
-## The "_new" documentation set
+## The documentation set
 
 The original `docs/` folder contains terse engineering notes intended
 for the implementer. The files below are the streamlined documentation
@@ -90,6 +218,7 @@ supervisor who needs the depth and the citations.
 | File | Audience | Read it for |
 |------|----------|-------------|
 | [`README.md`](README.md) | everyone | this overview |
+| [`docs/README.md`](docs/README.md) | everyone | docs index + reading order |
 | [`docs/00-background.md`](docs/00-background.md) | undergraduate | RISC-V, attention, the GCC pipeline, GIMPLE/SSA, custom instructions — from zero |
 | [`docs/01-instruction-spec.md`](docs/01-instruction-spec.md) | undergraduate + supervisor | the ISA-level specification of `attn` (encoding, semantics, ABI, worked decoding) |
 | [`docs/02-compiler-pass.md`](docs/02-compiler-pass.md) | undergraduate + supervisor | the `attnrec` pass — how it detects SDPA and emits the instruction |
@@ -99,10 +228,6 @@ supervisor who needs the depth and the citations.
 | [`docs/06-extending-toolchain.md`](docs/06-extending-toolchain.md) | researcher | template for adding *any* new RISC-V custom instruction |
 | [`docs/07-research-context.md`](docs/07-research-context.md) | supervisor | related work, novelty claim, limitations, future research |
 | [`docs/08-glossary.md`](docs/08-glossary.md) | undergraduate | every acronym and term used in this repo, defined |
-
-The older duplicate documentation files have been removed so the repo
-now has one clear documentation path: `README.md` for the overview and
-`docs/` for the deep dives.
 
 ---
 
@@ -134,14 +259,14 @@ now has one clear documentation path: `README.md` for the overview and
 
 ## What the result looks like
 
-Compiling a clean C implementation of fused SDPA (`finale.c`) with
-the modified toolchain:
+Compiling a clean C implementation of fused SDPA (`demo/sdpa_test.c`)
+with the modified toolchain:
 
 ```bash
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
     -mattn -O2 \
     -fno-schedule-insns -fno-schedule-insns2 \
-    -S finale.c -o finale.s
+    -S demo/sdpa_test.c -o /tmp/sdpa_test.s
 ```
 
 produces, among the usual prologue/epilogue, a single line:
@@ -166,6 +291,7 @@ for why this is the correct behaviour and how to take the next step.
 | Toolchain-side encoding (assembler / disassembler) | Complete | this repo |
 | Compiler pattern matching (`attnrec` pass) | Complete | this repo |
 | RTL / IR plumbing (IFN, define_insn, expander) | Complete | this repo |
+| Generic pipeline for *new* custom instructions | Complete | `scripts/` |
 | Hardware semantics in a simulator (Spike) | **Not done** — Phase 4 | future work |
 | Synthesisable RTL (Verilog/Chisel) for an accelerator | Out of scope | future work |
 | Equivalence proof / verified loop deletion | Out of scope | future work |
@@ -194,6 +320,7 @@ Bug reports and questions are welcome via the repository issue tracker.
 
 The toolchain sources retain their original licenses (GPLv3 for GCC,
 GPLv3 / LGPL for binutils, etc.). The project-specific additions
-(`tree-ssa-attn.cc`, the `_new` documentation files, and the test
-input `finale.c`) are released under the same license as the
-component they extend.
+(`gcc/gcc/tree-ssa-attn.cc`, the documentation set under `docs/`,
+the reference test program in `demo/`, and the generic pipeline in
+`scripts/`) are released under the same license as the component
+they extend.

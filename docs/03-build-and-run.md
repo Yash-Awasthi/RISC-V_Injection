@@ -94,7 +94,7 @@ git clone https://github.com/Yash-Awasthi/CD.git ../CD
 cp -r ../CD/gcc/*       gcc/
 cp -r ../CD/binutils/*  binutils/
 
-# Copy the SDPA test program if you have one (e.g. finale.c)
+# Copy the SDPA test program if you have one (e.g. sdpa_test.c)
 # It lives in custom_attn/test in the older tree; in the
 # Yash-Awasthi/CD repo it sits at the root.
 ```
@@ -234,7 +234,7 @@ If either is wrong, see
 Now the more interesting test: does the modified GCC, when compiling
 plain C with `-mattn -O2`, *automatically* emit our instruction?
 
-The repository ships a test source `finale.c` containing a fused
+The repository ships a test source `sdpa_test.c` containing a fused
 SDPA implementation (one outer `i`-loop wrapping all four phases —
 the form the matcher recognises). Compile it to assembly:
 
@@ -242,13 +242,13 @@ the form the matcher recognises). Compile it to assembly:
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
     -mattn -O2 \
     -fno-schedule-insns -fno-schedule-insns2 \
-    -S finale.c -o finale.s
+    -S sdpa_test.c -o sdpa_test.s
 ```
 
 Search for the instruction:
 
 ```bash
-grep -n '\battn\b' finale.s && echo "PASS — attn emitted" || echo "FAIL"
+grep -n '\battn\b' sdpa_test.s && echo "PASS — attn emitted" || echo "FAIL"
 ```
 
 Expected:
@@ -277,9 +277,9 @@ suppresses the instruction. This is a direct check of the gate:
 
 ```bash
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
-    -O2 -S finale.c -o finale_no_mattn.s
+    -O2 -S sdpa_test.c -o sdpa_test_no_mattn.s
 
-if grep -q '\battn\b' finale_no_mattn.s ; then
+if grep -q '\battn\b' sdpa_test_no_mattn.s ; then
     echo "FAIL — attn emitted despite no -mattn (gate broken)"
 else
     echo "GATE OK — attn correctly suppressed"
@@ -305,9 +305,9 @@ GIMPLE IR after each pass. For our pass:
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
     -mattn -O2 \
     -fdump-tree-attnrec-details \
-    -c finale.c -o finale.o
+    -c sdpa_test.c -o sdpa_test.o
 
-cat finale.c.*attnrec*
+cat sdpa_test.c.*attnrec*
 ```
 
 The dump shows, for each loop the pass examined, which of the five
@@ -385,10 +385,10 @@ return `PASS`. This is a useful CI-style script to keep around.
 | 2 | Hello-world links | `gcc /tmp/t.c -o /tmp/t.elf` | exit 0 |
 | 3 | Assembler accepts `attn` | `as attn_asm.S` | exit 0 |
 | 4 | objdump prints `attn` | `objdump -d attn_asm.o` | line contains `attn ` |
-| 5 | Compiler emits `attn` (positive) | `gcc -mattn -O2 -S finale.c` | `grep '\battn\b' finale.s` matches |
-| 6 | Compiler suppresses `attn` (negative) | `gcc -O2 -S finale.c` | `grep '\battn\b'` does *not* match |
-| 7 | GIMPLE dump exists | `gcc -mattn -O2 -fdump-tree-attnrec-details -c finale.c` | `finale.c.*attnrec*` file present |
-| 8 | Dump records emission | `cat finale.c.*attnrec*` | string `IFN_RISCV_ATTN` appears |
+| 5 | Compiler emits `attn` (positive) | `gcc -mattn -O2 -S sdpa_test.c` | `grep '\battn\b' sdpa_test.s` matches |
+| 6 | Compiler suppresses `attn` (negative) | `gcc -O2 -S sdpa_test.c` | `grep '\battn\b'` does *not* match |
+| 7 | GIMPLE dump exists | `gcc -mattn -O2 -fdump-tree-attnrec-details -c sdpa_test.c` | `sdpa_test.c.*attnrec*` file present |
+| 8 | Dump records emission | `cat sdpa_test.c.*attnrec*` | string `IFN_RISCV_ATTN` appears |
 
 If checks 1–4 pass but 5 fails, the pass is built but its gate or
 matching is broken.

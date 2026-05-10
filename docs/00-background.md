@@ -153,7 +153,7 @@ through every one of them.
 
 ```
                      +-------------------+
-        finale.c     |  C source         |
+        sdpa_test.c     |  C source         |
                      +-------------------+
                               |
                               | preprocess (cpp)
@@ -297,7 +297,7 @@ phases:
 4. **`O = S · V`** — another triple-nested matrix product, again
    `O(N²d)`.
 
-A naïve C implementation looks like the file `finale.c` in this
+A naïve C implementation looks like the file `sdpa_test.c` in this
 repository: four loop nests, a few hundred GIMPLE statements after
 expansion, a transcendental function call, and a floating-point
 division. SDPA is the *single most expensive operation* in inference

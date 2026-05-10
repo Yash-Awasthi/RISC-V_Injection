@@ -309,7 +309,7 @@ Honesty about what this work does *not* do strengthens the claim.
 |------------|------------------------------------|
 | The hardware semantics of `attn` are not implemented. | This is by design — the project's contribution is the toolchain side. Phase 4 (§5.1) closes this gap. |
 | The matcher recognises only *one* canonical SDPA shape (fused outer loop). | False negatives on alternative shapes are detected via the GIMPLE dump and produce no incorrect code. Adapting the source to the recognised shape is documented in [§9.2 of `02-compiler-pass.md`](02-compiler-pass.md#92-completeness-false-negatives). |
-| Test coverage is one program (`finale.c`) and one shape (`N = d = 32`). | A robustness study (§5.5) is the appropriate response. |
+| Test coverage is one program (`sdpa_test.c`) and one shape (`N = d = 32`). | A robustness study (§5.5) is the appropriate response. |
 | The five matching conditions are syntactic; they do not constitute a semantic proof. | Standard for idiom recogniser passes. The volatile call is left alongside the original loop body so that even a false positive is non-catastrophic until Phase 4 ships. |
 | No measurement of compile-time overhead. | The pass's worst-case work is `O(F)` in the number of basic blocks/statements per function, with early-exit on each of the five checks. Overhead is expected to be sub-percentage of total compile time; measuring it is straightforward future work. |
 | The R4-type encoding hard-codes float32 and row-major. | Quantised (int8, fp8) and column-major variants would require new `funct2` values and matcher branches. The two unused `funct2` bit patterns within `custom-0` provide easy room to grow. |
@@ -321,7 +321,7 @@ Honesty about what this work does *not* do strengthens the claim.
 A small but defensible evaluation that a thesis or paper could
 present:
 
-1. **Functional correctness.** Show, for `finale.c` with shapes
+1. **Functional correctness.** Show, for `sdpa_test.c` with shapes
    (N, d) ∈ {(32,32), (64,64), (128,128)}, that the compiler
    emits exactly one `attn` instruction per call site, and that
    the binary's behaviour is identical *with* and *without*
