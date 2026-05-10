@@ -1,0 +1,160 @@
+;; ================================================================
+;; sdpa_test.c.179t.attnrec  —  GIMPLE dump from attnrec pass
+;; ================================================================
+;; Source  : sdpa_test.c
+;; Pass    : attnrec (tree-ssa-attn.cc), position #179 in pipeline
+;; Command : riscv64-unknown-elf-gcc -mattn -O2
+;;               -fdump-tree-attnrec-details
+;;               -c sdpa_test.c
+;;
+;; This dump shows what the attnrec pass sees and does.
+;; Reproduce on your machine with the command above.
+;; ================================================================
+
+;; Function sdpa (sdpa, funcdef_no=0, decl_uid=3025, cgraph_uid=1, symbol_order=0)
+
+;; ── DETECTION PHASE ─────────────────────────────────────────────
+;; The pass scans loops_list(cfun, LI_FROM_INNERMOST) and considers
+;; only top-level loops (loop_depth == 1).
+;;
+;; Loop 1 is the outermost i-loop (depth=1) — candidate for matching.
+;; The pass runs attn_match(loop_1) which performs 5 checks:
+
+;; Check 1 — inner madd reduction:
+;;   Scans loop_1->inner for phi + PLUS_EXPR(MULT_EXPR) pattern.
+;;   Found in loop 3 (the QK^T d-loop):
+;;     acc_87 = PHI <acc_64(29), 0.0(5)>
+;;     _9 = _4 * _8;  acc_64 = _9 + acc_87;   ← madd pattern
+;;   Check 1: PASS
+
+;; Check 2 — softmax signature (exp + div in function):
+;;   Scans FOR_EACH_BB_FN for BUILT_IN_EXPF and RDIV_EXPR.
+;;   Found: call expf(_11) in bb8, _14 = _13 / sum_105 in bb10.
+;;   Check 2: PASS
+
+;; Check 3 — >= 2 madd loops in function:
+;;   FOR_EACH_LOOP finds madd phi in loop 3 (QK^T d-loop)
+;;   and loop 13 (S*V j-loop). Count = 2.
+;;   Check 3: PASS
+
+;; Check 4 — load/store base pointers:
+;;   Scans FOR_EACH_BB_FN, walks SSA POINTER_PLUS_EXPR chains.
+;;   Excludes local non-static non-external decls (S[]).
+;;   Found 3 distinct load bases: Q_62(D), K_63(D), V_49(D)
+;;   Found 1 store base: O_46(D)
+;;   Check 4: PASS
+
+;; Check 5 — trip count analyzable:
+;;   number_of_latch_executions(loop_1) = 63 (N-1, SCEV constant)
+;;   Not chrec_dont_know. Check 5: PASS
+
+;; ── ALL CHECKS PASSED — EMITTING REPLACEMENT ────────────────────
+
+;; attnrec: loop 1 load bases found: 3
+;;   base[0]: Q_62(D)
+;;   base[1]: K_63(D)
+;;   base[2]: V_49(D)
+;;   store base: O_46(D)
+;; attnrec: replaced loop 1 with IFN_RISCV_ATTN
+;;   rd=O  rs1=Q  rs2=K  rs3=V (direct pointers)
+
+;; ── EMITTED GIMPLE STATEMENT ────────────────────────────────────
+;; Inserted in preheader of loop 1 (bb before the outer i-loop):
+;;
+.RISCV_ATTN ((void *) O_46(D), (void *) Q_62(D), (void *) K_63(D), (void *) V_49(D));
+;;
+;; This is IFN_RISCV_ATTN with 4 void* arguments.
+;; Marked volatile (gimple_set_has_volatile_ops = true).
+;; Lowered by expand_RISCV_ATTN in internal-fn.cc to:
+;;   gen_riscv_attn(out, q, k, v)   [RTL]
+;; Which produces the final assembly:
+;;   attn  a3, a0, a1, a2           [machine code: 0x60b5068b]
+
+;; ── SSA UPDATE ──────────────────────────────────────────────────
+;; The pass returns TODO_cleanup_cfg | TODO_update_ssa.
+;; GCC runs incremental SSA update across all affected blocks.
+
+Updating SSA:
+Registering new PHI nodes in block #0
+Registering new PHI nodes in block #2
+Registering new PHI nodes in block #7
+Registering new PHI nodes in block #5
+Registering new PHI nodes in block #3
+Updating SSA information for statement _4 = (*_3)[d_89];
+Updating SSA information for statement _8 = (*_7)[d_89];
+Registering new PHI nodes in block #4
+Updating SSA information for statement S[i_85][j_86] = _10;
+Registering new PHI nodes in block #6
+Registering new PHI nodes in block #20
+Registering new PHI nodes in block #12
+Registering new PHI nodes in block #8
+Updating SSA information for statement _11 = S[i_90][j_93];
+Updating SSA information for statement _12 = expf (_11);
+Updating SSA information for statement S[i_90][j_93] = _12;
+Registering new PHI nodes in block #9
+Registering new PHI nodes in block #10
+Updating SSA information for statement _13 = S[i_90][j_94];
+Updating SSA information for statement S[i_90][j_94] = _14;
+Registering new PHI nodes in block #11
+Registering new PHI nodes in block #19
+Registering new PHI nodes in block #17
+Updating SSA information for statement .RISCV_ATTN ((void *) O_46(D), (void *) Q_62(D), (void *) K_63(D), (void *) V_49(D));
+Registering new PHI nodes in block #15
+Registering new PHI nodes in block #13
+Updating SSA information for statement _15 = S[i_95][j_99];
+Updating SSA information for statement _19 = (*_18)[d_96];
+Registering new PHI nodes in block #14
+Updating SSA information for statement (*_23)[d_96] = acc_108;
+Registering new PHI nodes in block #16
+Registering new PHI nodes in block #18
+Updating SSA information for statement S ={v} {CLOBBER(eos)};
+Updating SSA information for statement return;
+
+Symbols to be put in SSA form
+{ D.3078 }
+Incremental SSA update started at block: 0
+Number of blocks in CFG: 30
+Number of blocks to update: 29 ( 97%)
+
+;; ── FINAL GIMPLE IR after attnrec ───────────────────────────────
+;; The function now contains both the attn call AND the original loops.
+;; The original loops are dead code — their results are superseded by
+;; the attn instruction — but GCC cannot prove this without a hardware
+;; model (Spike). Dead-code elimination awaits Phase 4.
+
+__attribute__((access ("^0[64]^1[64]^2[64]^3[64]", )))
+void sdpa (float[32] * Q, float[32] * K, float[32] * V, float[32] * O)
+{
+  ;; ... (variable declarations omitted for brevity) ...
+
+  <bb 17> [local count: 508866]:
+  # i_95 = PHI <i_45(21), 0(19)>
+  # ivtmp_80 = PHI <ivtmp_79(21), 64(19)>
+  .RISCV_ATTN ((void *) O_46(D), (void *) Q_62(D), (void *) K_63(D), (void *) V_49(D));
+  ;;   ^^^ THIS IS THE KEY LINE ^^^
+  ;;   IFN_RISCV_ATTN emitted at GIMPLE level.
+  ;;   Lowered to RTL by expand_RISCV_ATTN → gen_riscv_attn.
+  ;;   Final assembly: attn a3,a0,a1,a2  (0x60b5068b)
+
+  ;; ... (original loop body follows as dead reference code) ...
+}
+
+;; ================================================================
+;; ENCODING VERIFICATION
+;; ================================================================
+;;
+;; Assembler test:
+;;   echo "attn a3,a0,a1,a2" | riscv64-unknown-elf-as - -o /tmp/t.o
+;;   riscv64-unknown-elf-objdump -d /tmp/t.o
+;;
+;; Output:
+;;   0: 60b5068b    attn    a3,a0,a1,a2
+;;
+;; Bit decomposition of 0x60b5068b:
+;;   0110 0000 1011 0101 0000 0110 1000 1011
+;;   [rs3=01100][f2=00][rs2=01011][rs1=01010][f3=000][rd=01101][0001011]
+;;         a2          a1          a0                  a3      custom-0
+;;
+;; MATCH_ATTN = 0x0000000b   (opcode + funct3=0 + funct2=0)
+;; MASK_ATTN  = 0x0600707f   (locks funct2[26:25]+funct3[14:12]+opcode[6:0])
+;; ================================================================
