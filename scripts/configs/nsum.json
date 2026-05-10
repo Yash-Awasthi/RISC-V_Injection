@@ -1,0 +1,18 @@
+{
+  "mnemonic": "nsum",
+  "num_inputs": 1,
+  "insn_class": "INSN_CLASS_I",
+  "pattern_kind": "closed_form_loop",
+  "loop": {
+    "reduction_op": "PLUS_EXPR",
+    "step_is_iv": true,
+    "_comment": "matches: acc=0; for(i=0;i<n;++i) acc+=i;  ->  acc = n*(n-1)/2. Replace with IFN_RISCV_NSUM(n)."
+  },
+  "match": null,
+  "mask":  null,
+  "_notes": [
+    "num_inputs=1 -> R-type, operand_string='d,s', 2 architectural regs (rd, rs1=n).",
+    "Trip count must be statically analysable via number_of_latch_executions().",
+    "Insert AFTER pass_graphite (same slot as attnrec) so SCEV is available."
+  ]
+}

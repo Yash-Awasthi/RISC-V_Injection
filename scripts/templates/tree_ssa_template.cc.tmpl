@@ -1,0 +1,96 @@
+/* RISC-V {{MNEMONIC}}-idiom recognizer.
+   Auto-generated from tree_ssa_template.cc.tmpl by 02_generate_snippets.py.
+   Pattern kind: {{PATTERN_KIND}}
+   Instruction:  {{MNEMONIC}} {{OPERAND_STRING_HUMAN}}
+   Inputs:       {{NUM_INPUTS}} source register(s) + 1 destination.
+*/
+
+#define INCLUDE_MEMORY
+#include "config.h"
+#include "system.h"
+#include "coretypes.h"
+#include "backend.h"
+#include "tree.h"
+#include "gimple.h"
+#include "tree-pass.h"
+#include "ssa.h"
+#include "fold-const.h"
+#include "gimple-iterator.h"
+#include "gimple-pretty-print.h"
+#include "cfgloop.h"
+#include "tree-cfg.h"
+#include "tree-ssa-loop.h"
+#include "tree-ssa-loop-manip.h"
+#include "tree-ssa-loop-niter.h"
+#include "tree-scalar-evolution.h"
+#include "internal-fn.h"
+#include "gimple-fold.h"
+#include "tree-data-ref.h"
+#include "diagnostic-core.h"
+#include "stor-layout.h"
+#include "cfganal.h"
+#include "tree-eh.h"
+#include "tree-ssa.h"
+#include "tree-into-ssa.h"
+#include "builtins.h"
+
+namespace {
+
+/* ------------------------------------------------------------------ */
+/* Pass descriptor                                                     */
+/* ------------------------------------------------------------------ */
+
+const pass_data pass_data_recognize_{{MNEMONIC}} =
+{
+  GIMPLE_PASS,
+  "{{MNEMONIC}}rec",
+  OPTGROUP_NONE,
+  TV_TREE_LOOP,
+  PROP_cfg | PROP_ssa,
+  0, 0, 0, TODO_update_ssa
+};
+
+{{MATCHER_BODY}}
+
+/* ------------------------------------------------------------------ */
+/* Pass class                                                          */
+/* ------------------------------------------------------------------ */
+
+class pass_recognize_{{MNEMONIC}} : public gimple_opt_pass
+{
+public:
+  pass_recognize_{{MNEMONIC}} (gcc::context *ctxt)
+    : gimple_opt_pass (pass_data_recognize_{{MNEMONIC}}, ctxt) {}
+
+  bool gate (function *) final override
+  {
+#ifdef {{TARGET_MACRO}}
+    return {{TARGET_MACRO}} && optimize >= 2;
+#else
+    return false;
+#endif
+  }
+
+  unsigned int execute (function *fun) final override;
+};
+
+unsigned int
+pass_recognize_{{MNEMONIC}}::execute (function *fun)
+{
+  bool changed = {{EXECUTE_BODY}};
+
+  if (changed)
+    {
+      mark_virtual_operands_for_renaming (fun);
+      return TODO_cleanup_cfg | TODO_update_ssa | TODO_remove_unused_locals;
+    }
+  return 0;
+}
+
+} // anon namespace
+
+gimple_opt_pass *
+make_pass_recognize_{{MNEMONIC}} (gcc::context *ctxt)
+{
+  return new pass_recognize_{{MNEMONIC}} (ctxt);
+}

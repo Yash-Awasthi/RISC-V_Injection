@@ -1,0 +1,19 @@
+{
+  "mnemonic": "fds",
+  "num_inputs": 3,
+  "insn_class": "INSN_CLASS_I",
+  "pattern_kind": "arith_expr",
+  "arith": {
+    "outer_op": "MINUS_EXPR",
+    "inner_op": "RDIV_EXPR",
+    "inner_pos": 0,
+    "_comment": "matches: result = (a / b) - c. inner_pos=0 means LHS of outer_op is the inner_op."
+  },
+  "match": null,
+  "mask":  null,
+  "_notes": [
+    "num_inputs=3 -> R4-type, operand_string='d,s,t,r', 4 architectural regs (rd, rs1=a, rs2=b, rs3=c).",
+    "Leave match/mask null and 02_generate_snippets.py will pick the first free slot via 01_identify_free_opcodes.",
+    "The pass replaces the GIMPLE statement 'result = (a/b) - c' with IFN_RISCV_FDS(a, b, c)."
+  ]
+}
