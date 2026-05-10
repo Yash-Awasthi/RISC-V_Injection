@@ -1,0 +1,16 @@
+{
+  "mnemonic": "fma",
+  "num_inputs": 3,
+  "insn_class": "INSN_CLASS_I",
+  "pattern_kind": "marker",
+  "rtl_kind": "register",
+  "marker_fn": "__custom_fma",
+  "match": null,
+  "mask":  null,
+  "_notes": [
+    "num_inputs=3 -> R4-type, operand_string='d,s,t,r' (rd, rs1=a, rs2=b, rs3=c).",
+    "pattern_kind=marker means: every call to __custom_fma(a,b,c) in the user's",
+    "C source is rewritten by tree-ssa-fma.cc into IFN_RISCV_FMA(a,b,c).",
+    "The compiler does NOT have to prove a*b+c equivalence — see examples/fma_demo.c."
+  ]
+}

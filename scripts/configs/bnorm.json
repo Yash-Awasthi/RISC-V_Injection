@@ -1,0 +1,15 @@
+{
+  "mnemonic": "bnorm",
+  "num_inputs": 3,
+  "insn_class": "INSN_CLASS_I",
+  "pattern_kind": "marker",
+  "rtl_kind": "memory",
+  "marker_fn": "__custom_bnorm",
+  "match": null,
+  "mask":  null,
+  "_notes": [
+    "Three pointer arguments (x, gamma_beta, out). rtl_kind='memory' means the",
+    "RTL define_insn uses (mem:BLK ...) operands so the optimiser knows the",
+    "instruction touches memory of unknown size."
+  ]
+}

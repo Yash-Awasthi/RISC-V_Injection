@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# 05_run_pattern_test.sh — verify the compiler pass emits <mnemonic>
-# Group 9 | RISC-V GNU Toolchain
+# 05_test.sh — Verify the compiler pass emits <mnemonic>.
 #
 # Usage:
-#   ./05_run_pattern_test.sh <mnemonic> [install_prefix] [test_c_file]
+#   ./05_test.sh <mnemonic> [install_prefix] [test_c_file]
+#
 # Example:
-#   ./05_run_pattern_test.sh fds   $HOME/riscv-install   tests/fds.c
-#   ./05_run_pattern_test.sh nsum  $HOME/riscv-install   tests/nsum.c
+#   ./05_test.sh fds   $HOME/riscv-install   tests/fds.c
+#   ./05_test.sh nsum  $HOME/riscv-install   tests/nsum.c
 #
 # Compiles the C file with -m<flag> -O2 -S and greps for the mnemonic.
 
@@ -14,7 +14,8 @@ set -euo pipefail
 
 MNEMONIC="${1:?usage: $0 <mnemonic> [install_prefix] [test_c_file]}"
 INSTALL="${2:-$HOME/riscv-install}"
-TEST_C="${3:-$(dirname "$0")/tests/${MNEMONIC}.c}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TEST_C="${3:-${SCRIPT_DIR}/tests/${MNEMONIC}.c}"
 
 if [[ ! -f "${TEST_C}" ]]; then
   echo "  ✘ Test source not found: ${TEST_C}"
@@ -30,8 +31,7 @@ echo "  Source:       ${TEST_C}"
 echo "  Compiler:     ${GCC}"
 echo "═══════════════════════════════════════════════════════"
 
-# The -fno-schedule-insns* flags prevent the scheduler from re-ordering
-# instructions across our IFN call (matches docs/03-build-and-run.md).
+# -fno-schedule-insns* prevents reordering across the IFN call.
 "${GCC}" \
   "-m${MNEMONIC}" -O2 \
   -fno-schedule-insns -fno-schedule-insns2 \
