@@ -37,6 +37,8 @@ top-to-bottom.
 | 06 | [`06-extending-toolchain.md`](06-extending-toolchain.md) | Researcher | A template for adding *any* new RISC-V custom instruction (the recipe behind `scripts/`). |
 | 07 | [`07-research-context.md`](07-research-context.md) | Supervisor | Related work, novelty claim, limitations, and future research directions. |
 | 08 | [`08-glossary.md`](08-glossary.md) | Undergraduate | Every acronym and term used in this repository, defined. |
+| 09 | [`09-demo-walkthrough.md`](09-demo-walkthrough.md) | Undergraduate | File-by-file walkthrough of `demo/` and `demo/failures/`. |
+| 10 | [`10-scripts-pipeline.md`](10-scripts-pipeline.md) | Researcher / Implementer | File-by-file reference for the `scripts/` generic pipeline. |
 
 ---
 
@@ -44,7 +46,7 @@ top-to-bottom.
 
 **Undergraduate, "what is going on here"**
 
-`00 → 01 → 02 → 03`. Read 04 only when you want to know what was
+`00 → 01 → 02 → 03 → 09`. Read 04 only when you want to know what was
 *actually* edited; read 05 only when you hit one of the errors.
 
 **Research supervisor / reviewer, "is this a real contribution"**
@@ -55,7 +57,8 @@ toolchain internals.
 
 **Implementer, "I want to add my own custom instruction"**
 
-`06 → 04 → 02 → 05`. Doc 06 is the template; the others are
+`06 → 10 → 04 → 02 → 05`. Doc 06 is the template, doc 10 is the
+file-by-file reference for the generic pipeline; the others are
 reference material as you work.
 
 **Just trying to reproduce the build**
@@ -69,12 +72,14 @@ reference material as you work.
 * The reference SDPA test program documented throughout these files
   lives in [`../demo/sdpa_test.c`](../demo/sdpa_test.c). The
   expected assembly output and the post-pass GIMPLE dump are next to
-  it.
+  it. A file-by-file walkthrough of `demo/` is in
+  [`09-demo-walkthrough.md`](09-demo-walkthrough.md).
 * The generic pipeline that *generalises* the recipe in
   [`06-extending-toolchain.md`](06-extending-toolchain.md) is
-  implemented in [`../scripts/`](../scripts/). The two are kept
-  consistent: any change to the recipe in doc 06 should also be
-  reflected in `scripts/lib/snippets.py`.
+  implemented in [`../scripts/`](../scripts/) and documented
+  file-by-file in [`10-scripts-pipeline.md`](10-scripts-pipeline.md).
+  The two are kept consistent: any change to the recipe in doc 06
+  should also be reflected in `scripts/lib/snippets.py`.
 * Every concrete file path mentioned in [`04-patches-and-files.md`](04-patches-and-files.md)
   is verified against the actual contents of `../gcc/` and
   `../binutils/`. If you find a drift, please open an issue.
