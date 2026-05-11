@@ -209,11 +209,12 @@ part of normal `-O2` compilation, gated only by `-mattn`.
 
 ## The documentation set
 
-The original `docs/` folder contains terse engineering notes intended
-for the implementer. The files below are the streamlined documentation
-set now organized under `docs/`, designed for two audiences: a CS
-undergraduate who has never touched a compiler before, and a research
-supervisor who needs the depth and the citations.
+The long-form documentation under `docs/` is written for two
+audiences in parallel: a CS undergraduate who has never opened a
+compiler source tree, and a research supervisor or reviewer who
+wants the depth and the citations. Every file is self-contained;
+the numbering below is a suggested reading order, not a hard
+dependency chain.
 
 | File | Audience | Read it for |
 |------|----------|-------------|

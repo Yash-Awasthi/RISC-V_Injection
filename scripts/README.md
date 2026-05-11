@@ -1,122 +1,203 @@
-# `scripts/` — generic custom-RISC-V-instruction pipeline
+# `scripts/` — Add your own custom RISC-V instruction in one command
 
-A small, self-contained toolkit that turns either **a JSON config**
-or **a plain C source file** into a fully patched
-`riscv-gnu-toolchain` tree which recognises the corresponding idiom
-and emits a single custom machine instruction.
+## What this directory is
 
-The reference instance of this pipeline is the `attn` instruction
-that ships with the rest of this repository (`gcc/gcc/tree-ssa-attn.cc`,
-`-mattn`, `attn rd, rs1, rs2, rs3` — see the top-level
-[`README.md`](../README.md)).  Everything in `scripts/` exists so a
-*different* instruction (FMA, batch-norm, integration-of-sin-x,
-GEMM, RoPE, LayerNorm — anything you can express as a function call)
-can be added the same way, in one command.
+Adding a new instruction to GCC + binutils by hand means editing
+eleven different files spread across two source trees, in a very
+specific order, with subtly different syntax in each one. Get any
+edit wrong and the toolchain either fails to build or silently does
+the wrong thing. This directory is a script that does all eleven
+edits *for* you, given a one-paragraph description of the instruction
+you want.
+
+The `attn` instruction shipped with the rest of this repository
+(`gcc/gcc/tree-ssa-attn.cc`, the `-mattn` flag, the assembly mnemonic
+`attn rd, rs1, rs2, rs3` — see the top-level
+[`README.md`](../README.md)) was the first instruction added by hand.
+Everything in `scripts/` is that experience boiled down to a reusable
+driver so the next instruction (FMA, batch-norm, integration of
+sin x, GEMM, RoPE, LayerNorm, anything else you can express as a
+function call) takes one command instead of a week.
+
+## The 30-second version
+
+Write a C file that calls a marker function:
+
+```c
+/* my_demo.c */
+extern long __custom_myop (long a, long b, long c);
+long demo (long a, long b, long c) { return __custom_myop (a, b, c); }
+```
+
+Run:
+
+```bash
+python3 scripts/customrv.py from-c my_demo.c --apply --build
+```
+
+The driver will (a) read your C file, (b) pick a free opcode slot in
+`custom-0..custom-3`, (c) generate eleven patches for the GCC and
+binutils trees, (d) show each one to you in context and ask before
+applying it, (e) install a brand-new `tree-ssa-myop.cc` GIMPLE pass
+that rewrites every `__custom_myop(...)` call into a single `myop`
+machine instruction, then (f) rebuild the toolchain and run a
+pattern test. The result is a `riscv64-unknown-elf-gcc` that
+recognises `-mmyop` and emits the new mnemonic — without intrinsics,
+without inline assembly, without `.insn` directives.
+
+That is it. The rest of this document is detail.
 
 ---
 
-## Two ways to use it
+## The two entry points
 
-### Way 1 — start from a JSON config
+The driver `customrv.py` accepts your instruction description in
+either of two equivalent forms.
 
-Best when you already know the exact GIMPLE shape you want to match.
-Examples ship in `configs/`:
+### Way 1 — JSON config
+
+Use this when you already know the exact GIMPLE shape you want to
+match. The four worked examples in [`configs/`](./configs/) cover
+every `pattern_kind` the pipeline currently supports.
 
 ```bash
 python3 scripts/customrv.py from-config scripts/configs/fds.json --apply --build
 ```
 
-### Way 2 — start from a C file (recommended)
+### Way 2 — C source file (recommended for first-time users)
 
-You hand the script a `.c` file with one function and (usually) one
-call to a magic marker symbol `__custom_<mnemonic>(args…)`.  The
-analyser figures out:
+Use this when you would rather describe the instruction by example.
+Hand the driver a `.c` file containing one function and (usually)
+one call to a marker symbol `__custom_<mnemonic>(args...)`. The
+analyser in [`lib/c_analyzer.py`](./lib/c_analyzer.py) infers
 
-* the mnemonic,
-* the input arity,
-* whether the operands are scalars (R-type / R4-type) or pointers
-  (memory-style `(mem:BLK …)` RTL),
-* a free `MATCH/MASK` slot in `custom-0..custom-3`,
-* and the matching pattern_kind.
+* the **mnemonic** (from the marker or the function name);
+* the **input arity** (number of register operands);
+* whether the operands are **scalars** (R-type / R4-type) or
+  **pointers** (memory-style `(mem:BLK …)` RTL);
+* a free **MATCH / MASK** slot in `custom-0..custom-3`;
+* and the right **pattern_kind** (`arith_expr`, `closed_form_loop`,
+  or universal `marker`).
 
-Then it walks all 11 patches with you:
+It then walks the eleven patches with you:
 
 ```bash
 python3 scripts/customrv.py from-c scripts/examples/fma_demo.c --apply --build
 ```
 
-If the C source contains arithmetic in a closed form the analyser
-recognises (`(a/b) - c`, `Σi`, `a*b + c`), it picks the *specific*
-matcher.  Otherwise it falls back to the universal **marker** matcher
-— the one that just rewrites every `__custom_<mnemonic>(…)` call into
-`IFN_RISCV_<UPPER>` regardless of what the surrounding code does.
-This is what lets the pipeline work for instructions whose
-mathematics we deliberately *do not* simplify (FMA, BatchNorm,
-∫sin x dx, …).
+When the C source contains a closed-form arithmetic shape the
+analyser recognises (`(a/b) - c`, `Σi`, `a*b + c`), the *specific*
+matcher template is selected. Otherwise the analyser falls back to
+the universal **marker** matcher — it rewrites every
+`__custom_<mnemonic>(…)` call into `IFN_RISCV_<UPPER>` regardless of
+the surrounding code. The marker path is what makes this pipeline
+work for any instruction whose mathematics we deliberately do *not*
+ask the compiler to understand (FMA, BatchNorm, ∫sin x dx, GEMM,
+LayerNorm, …).
 
 ---
 
-## Files
+## Files in this directory
 
-| File / dir                              | Purpose                                                                 |
-|-----------------------------------------|-------------------------------------------------------------------------|
-| `customrv.py`                           | The unified driver.  Subcommands: `free-opcodes`, `from-config`, `from-c`. |
-| `01_find_opcodes.py`                    | Standalone CLI — print free MATCH/MASK slots in `custom-0..custom-3`.   |
-| `02_generate.py`                        | Config → 11 patch artefacts (`out/<mnemonic>/{patches,new_files}`).     |
-| `03_apply.py`                           | Anchor-based, interactive patcher (no grep, no sed).                    |
-| `04_build.sh`                           | Rebuild the toolchain and run an assemble/disassemble round-trip.       |
-| `05_test.sh`                            | Compile a C test and grep the `.s` for the new mnemonic.                |
-| `lib/opcodes.py`                        | Opcode-slot allocator.                                                  |
-| `lib/config.py`                         | Config loading, validation, derive-names, MATCH/MASK auto-allocation.   |
-| `lib/snippets.py`                       | Builds the 11 patch records.                                            |
-| `lib/builders.py`                       | RTL `define_insn` and `internal-fn.cc` expander generators.             |
-| `lib/patcher.py`                        | The patch applier (anchor resolver, ambiguity prompt, .bak, idempotency). |
-| `lib/c_analyzer.py`                     | "Way 2" — walks a C source file and infers a config.                    |
-| `templates/tree_ssa_template.cc.tmpl`   | Skeleton for the new `tree-ssa-<mnemonic>.cc` pass.                     |
-| `templates/matcher_arith_expr.cc.frag`  | Matcher fragment for `(a OP1 b) OP2 c`.                                 |
-| `templates/matcher_closed_form_loop.cc.frag` | Matcher fragment for `acc += i` style reductions.                  |
-| `templates/matcher_marker.cc.frag`      | Universal marker matcher — `__custom_<mnemonic>(…)` → `IFN_RISCV_<UPPER>(…)`. |
-| `configs/`                              | Worked examples: `fds.json`, `nsum.json`, `fma.json`, `bnorm.json`.     |
-| `examples/`                             | Way-2 input C files: `fma_demo.c`, `batchnorm_demo.c`, `sinx_integral_demo.c`. |
-| `tests/`                                | Generated and hand-written C tests + `test_pipeline.py` (sanity tests). |
+The pipeline is organised into a thin top-level CLI layer, a shared
+library that does the actual work, and a templates / examples /
+tests subtree.
+
+### Top-level CLI
+
+| File | What it does |
+|------|--------------|
+| `customrv.py` | The unified driver. Three subcommands: `free-opcodes` (print available MATCH/MASK slots), `from-config` (Way 1), `from-c` (Way 2). Almost every user-facing command in this directory eventually calls into this script. |
+| `01_find_opcodes.py` | Standalone CLI for the opcode-slot finder. Reads `binutils/include/opcode/riscv-opc.h`, parses every existing `#define MATCH_<NAME>`, and prints free slots in `custom-0..custom-3` for the chosen instruction format. |
+| `02_generate.py` | Renders the eleven patch artefacts (ten in-place edits + one brand-new `tree-ssa-<mnemonic>.cc` file) from a config. Output goes under `out/<mnemonic>/{patches,new_files}/`. |
+| `03_apply.py` | The interactive patcher. Walks each generated patch, shows a 3-line context window from the live source, and asks for confirmation before writing. Anchor-based — not `grep` / `sed` / regex search-and-replace. |
+| `04_build.sh` | Rebuilds the modified toolchain and runs an assemble / disassemble round-trip on a one-line `.S` file to confirm the new mnemonic encodes correctly. |
+| `05_test.sh` | Compiles `tests/<mnemonic>.c` with the rebuilt compiler and greps the `.s` output for the new mnemonic. Exits non-zero if the instruction is missing. |
+
+### Shared library (`lib/`)
+
+| File | What it does |
+|------|--------------|
+| `lib/opcodes.py` | Free-slot allocator. Walks the funct2 / funct3 / funct7 sub-spaces of each custom-N opcode looking for a `(match, mask)` tuple that does not collide with any existing entry. |
+| `lib/config.py` | Loads + validates JSON configs, derives the bookkeeping fields (`upper`, `flag`, `target_macro`, `ifn`, `operand_string`), and auto-allocates MATCH/MASK when the config left them `null`. |
+| `lib/snippets.py` | Owns the canonical patch order. Builds the eleven patch records (each one a small JSON object with an anchor, a position, and an insertion block) and writes them to disk. |
+| `lib/builders.py` | Generates the RTL `define_insn` block and the `internal-fn.cc` expander function. Two flavours: `rtl_kind="register"` (classic ALU-style) and `rtl_kind="memory"` (accelerator-style with `(mem:BLK ...)` operands — the same shape `attn` uses). |
+| `lib/patcher.py` | The patch applier itself. Resolves anchors, prompts on ambiguity, prints context, asks `y/N`, creates a one-time `.bak`, is idempotent on re-runs, and gates on GCC == 15.2.x / binutils == 2.46.x. |
+| `lib/c_analyzer.py` | The "Way 2" brain. Reads a user-supplied `.c` file and produces a config: detects the marker call, the operand types, the closed-form arithmetic shape, or falls back to a synthetic marker wrapper. |
+
+### Templates (`templates/`)
+
+| File | Used when |
+|------|-----------|
+| `templates/tree_ssa_template.cc.tmpl` | *Always.* The skeleton for the generated `tree-ssa-<mnemonic>.cc` GIMPLE pass. |
+| `templates/matcher_arith_expr.cc.frag` | `pattern_kind == arith_expr`. Recognises `(a OP1 b) OP2 c` and rewrites it into `IFN_RISCV_<UPPER>(a, b, c)`. |
+| `templates/matcher_closed_form_loop.cc.frag` | `pattern_kind == closed_form_loop`. Recognises `for (i=0; i<n; ++i) acc += i;` and rewrites it into `IFN_RISCV_<UPPER>(n)`. |
+| `templates/matcher_marker.cc.frag` | `pattern_kind == marker`. The universal fallback: rewrites every `__custom_<mnemonic>(…)` call into `IFN_RISCV_<UPPER>(…)`. |
+
+### Worked examples and tests
+
+| File / dir | What it contains |
+|-----------|------------------|
+| `configs/` | Four hand-written JSON configs covering every supported `pattern_kind`: `fds.json` (arith_expr), `nsum.json` (closed_form_loop), `fma.json` (marker / register), `bnorm.json` (marker / memory). |
+| `examples/` | Three Way-2 input `.c` files: `fma_demo.c`, `batchnorm_demo.c`, `sinx_integral_demo.c`. |
+| `tests/` | The Python sanity harness `test_pipeline.py` (seven checks, no toolchain build required) plus one `<mnemonic>.c` per worked example for the rebuilt-compiler pattern tests. |
 
 ---
 
-## End-to-end usage (way 2 — recommended)
+## End-to-end usage — Way 2 (recommended)
 
 ```bash
-# 1. Inspect what's free in the opcode space (optional, for sanity).
+# 1. Optional sanity check — inspect what's free in the opcode space.
 python3 scripts/customrv.py free-opcodes --inputs 3
 
-# 2. Hand the driver your C file.  It generates 11 patch artefacts
-#    under scripts/out/<mnemonic>/ and (with --apply) walks them.
+# 2. Hand the driver your C file. It generates eleven patch artefacts
+#    under scripts/out/<mnemonic>/ and, with --apply, walks them.
 python3 scripts/customrv.py from-c examples/fma_demo.c \
-    --apply               # interactively apply patches with context
-    --yes                 # accept all prompts non-interactively
-    --build               # rebuild + smoke + pattern test
+    --apply  \
+    --yes    \
+    --build  \
     --install $HOME/riscv-install
 ```
 
-`--apply` prints, for every patch:
+What each flag does:
 
-* the resolved `<file>:<line>`,
-* three lines of context (the anchor and one line above/below),
-* the block to be inserted,
-* an explanatory note (where applicable).
+* `--apply` — actually edit the GCC and binutils source trees.
+  Without this flag the driver only writes patch JSON files under
+  `scripts/out/<mnemonic>/`; nothing in `gcc/` or `binutils/`
+  changes.
+* `--yes` — accept every confirmation prompt non-interactively.
+  Omit this flag the first time you run the pipeline so you can see
+  the context window for each edit.
+* `--build` — after applying, run `04_build.sh` (rebuild) and
+  `05_test.sh` (compile a test C file and grep for the new
+  mnemonic).
+* `--install <path>` — the toolchain install prefix used by the
+  build/test scripts. Defaults to `$HOME/riscv-install`.
 
-If an anchor is **ambiguous** (multiple raw matches in the file and
-the patch's `which` field is non-strict) the patcher prompts you to
-choose a candidate or type an explicit line number.  Anchors of kind
-`eof` never prompt.  This matches the project convention:
-*ask only when ambiguous*.
+For every patch, `--apply` prints the resolved `<file>:<line>`, a
+three-line context window centred on the anchor, the block that
+will be inserted, and an explanatory note where one applies.
+
+If an anchor is **ambiguous** — multiple raw matches in the file and
+the patch's `which` field is not strict — the patcher prompts you to
+pick a candidate or type an explicit line number. Anchors of kind
+`eof` never prompt. The convention throughout is *ask only when
+ambiguous*.
 
 ---
 
-## End-to-end usage (way 1 — JSON config)
+## End-to-end usage — Way 1 (JSON config)
+
+Use this when you know the exact GIMPLE shape and want to write the
+config by hand. The unified driver and the lower-level scripts
+give equivalent results:
 
 ```bash
+# One-shot via the driver:
 python3 scripts/customrv.py from-config configs/fds.json --apply --build
-# or, equivalently, the lower-level scripts:
+
+# Or, step by step — useful when you want to inspect what would
+# happen before letting the patcher write to the source tree:
 python3 scripts/02_generate.py configs/fds.json
 python3 scripts/03_apply.py    out/fds --dry-run
 python3 scripts/03_apply.py    out/fds
@@ -234,16 +315,20 @@ Override with `--force` (anchors may not match on other versions).
 
 ---
 
-## Sanity tests
+## Sanity tests — run these before anything else
+
+The Python sanity harness exercises the opcode finder, the config
+loader, both autodetect paths, the marker `mem:BLK` form, and a
+full dry-run patch against the real toolchain tree. None of these
+tests need a built RISC-V toolchain — they only touch the source.
+Running the seven checks takes well under a second; running the
+full 45-90 minute toolchain rebuild over a generation bug does not.
 
 ```bash
 python3 scripts/tests/test_pipeline.py
 ```
 
-Exercises the opcode finder, the config loader, both autodetect
-paths, the marker `mem:BLK` form, and a full dry-run patch against
-the real toolchain tree.  None of these tests need a built RISC-V
-toolchain — they only touch the source.
+Expected output:
 
 ```
 [1] opcode finder                        ✔
@@ -253,6 +338,8 @@ toolchain — they only touch the source.
 [5] arith_expr autodetect from raw C     ✔
 [6] end-to-end dry-run via 03_apply.py   ✔
 [7] customrv.py from-c (way 2)           ✔
+
+  7/7 tests passed
 ```
 
 ---
