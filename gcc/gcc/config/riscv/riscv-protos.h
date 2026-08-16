@@ -190,6 +190,7 @@ extern bool riscv_gimple_fold_builtin (gimple_stmt_iterator *);
 extern rtx riscv_expand_builtin (tree, rtx, rtx, machine_mode, int);
 extern tree riscv_builtin_decl (unsigned int, bool);
 extern void riscv_init_builtins (void);
+extern tree riscv_builtin_decl_attn (void);
 
 /* Routines implemented in riscv-common.cc.  */
 extern std::string riscv_arch_str (bool version_p = true);

@@ -1,9 +1,25 @@
 /* RISC-V attention-idiom recognizer — R4-type 4-register ABI.
    Instruction: attn rd, rs1, rs2, rs3
-     rd  -> &{ O_ptr }                   output array pointer
-     rs1 -> &{ Q_ptr, K_ptr, V_ptr }     input array pointers
-     rs2 -> &{ N, D, H }                 dimensions (int64)
-     rs3 -> &{ scale_bits, flags }       1/sqrt(D) as float bits + flags  */
+     rd  -> O                            output matrix, direct pointer
+     rs1 -> &attn_ptrs { Q_ptr, K_ptr, V_ptr }
+     rs2 -> &attn_dims { N, D, H }       uint64_t each
+     rs3 -> &attn_cfg  { scale_bits, flags }   uint32_t each, scale_bits
+                                          is 1/sqrt(D) as raw float32 bits
+   Normative definition: docs/01-instruction-spec.md section 4 and
+   demo/attn.h.  */
+
+/* Known limitation.  This pass is experimental and off by default
+   (-mattn-recognize).  The matcher scans the whole function rather
+   than a single loop body, so it does not prove that the statements
+   it collects execute in the order a real data dependency would
+   require.  Operand roles (which base is Q, K, V, or O) are guessed
+   positionally from scan order, not proven by data flow.  The pass
+   never proves that the matched loop nest computes scaled
+   dot-product attention; it only proves that the syntactic shape
+   matches.  Do not enable this pass by default.  attn_emit_replacement
+   still passes pre-ABI raw O/Q/K/V pointers instead of the block ABI
+   in docs/01-instruction-spec.md section 4; it does not conform and
+   is experimental.  */
 
 #define INCLUDE_MEMORY
 #include "config.h"
@@ -23,7 +39,6 @@
 #include "tree-ssa-loop-manip.h"
 #include "tree-ssa-loop-niter.h"
 #include "tree-scalar-evolution.h"
-#include "internal-fn.h"
 #include "gimple-fold.h"
 #include "tree-data-ref.h"
 #include "diagnostic-core.h"
@@ -33,6 +48,7 @@
 #include "tree-ssa.h"
 #include "tree-into-ssa.h"
 #include "builtins.h"
+#include "config/riscv/riscv-protos.h"
 
 namespace {
 
@@ -346,99 +362,7 @@ attn_match (class loop *outer, attn_info *info)
 }
 
 /* ------------------------------------------------------------------ */
-/* IR emitters — 4 struct blocks for R4-type ABI                       */
-/* ------------------------------------------------------------------ */
-
-/* rd -> &{ O_ptr } */
-static tree
-emit_out_struct (gimple_stmt_iterator *gsi, tree o_ptr)
-{
-  tree pty = build_pointer_type (void_type_node);
-  tree arr = build_array_type_nelts (pty, 1);
-  tree var = create_tmp_var (arr, "attn_out");
-  TREE_ADDRESSABLE (var) = 1;
-  tree idx = build_int_cst (integer_type_node, 0);
-  tree ref = build4 (ARRAY_REF, pty, var, idx, NULL_TREE, NULL_TREE);
-  gsi_insert_before (gsi, gimple_build_assign (ref,
-                     fold_convert (pty, o_ptr)), GSI_SAME_STMT);
-  return build_fold_addr_expr (var);
-}
-
-/* rs1 -> &{ Q_ptr, K_ptr, V_ptr } */
-static tree
-emit_qkv_struct (gimple_stmt_iterator *gsi, tree q, tree k, tree v)
-{
-  tree pty = build_pointer_type (void_type_node);
-  tree arr = build_array_type_nelts (pty, 3);
-  tree var = create_tmp_var (arr, "attn_qkv");
-  TREE_ADDRESSABLE (var) = 1;
-  tree srcs[3] = { q, k, v };
-  for (int i = 0; i < 3; i++)
-    {
-      tree idx = build_int_cst (integer_type_node, i);
-      tree ref = build4 (ARRAY_REF, pty, var, idx, NULL_TREE, NULL_TREE);
-      gsi_insert_before (gsi, gimple_build_assign (ref,
-                         fold_convert (pty, srcs[i])), GSI_SAME_STMT);
-    }
-  return build_fold_addr_expr (var);
-}
-
-/* rs2 -> &{ N, D, H }  H=1 single-head default */
-static tree
-emit_dims_struct (gimple_stmt_iterator *gsi, tree n_iters, tree d_iters)
-{
-  tree i64 = build_nonstandard_integer_type (64, 0);
-  tree arr = build_array_type_nelts (i64, 3);
-  tree var = create_tmp_var (arr, "attn_dims");
-  TREE_ADDRESSABLE (var) = 1;
-  tree vals[3] = { fold_convert (i64, n_iters),
-                   fold_convert (i64, d_iters),
-                   build_int_cst (i64, 1) };
-  for (int i = 0; i < 3; i++)
-    {
-      tree idx = build_int_cst (integer_type_node, i);
-      tree ref = build4 (ARRAY_REF, i64, var, idx, NULL_TREE, NULL_TREE);
-      gsi_insert_before (gsi, gimple_build_assign (ref, vals[i]),
-                         GSI_SAME_STMT);
-    }
-  return build_fold_addr_expr (var);
-}
-
-/* rs3 -> &{ scale_bits, flags }
-   scale = 1/sqrt(D) precomputed when D is a compile-time constant     */
-static tree
-emit_scale_struct (gimple_stmt_iterator *gsi, tree d_iters)
-{
-  tree i64 = build_nonstandard_integer_type (64, 0);
-  tree arr = build_array_type_nelts (i64, 2);
-  tree var = create_tmp_var (arr, "attn_scale");
-  TREE_ADDRESSABLE (var) = 1;
-
-  tree scale_bits;
-  if (tree_fits_uhwi_p (d_iters) && tree_to_uhwi (d_iters) > 0)
-    {
-      unsigned HOST_WIDE_INT d = tree_to_uhwi (d_iters);
-      float scale = 1.0f / __builtin_sqrtf ((float)d);
-      uint32_t bits;
-      __builtin_memcpy (&bits, &scale, 4);
-      scale_bits = build_int_cst (i64, (uint64_t) bits);
-    }
-  else
-    scale_bits = build_int_cst (i64, 0);  /* hardware reads dims[1] */
-
-  tree vals[2] = { scale_bits, build_int_cst (i64, 0) };
-  for (int i = 0; i < 2; i++)
-    {
-      tree idx = build_int_cst (integer_type_node, i);
-      tree ref = build4 (ARRAY_REF, i64, var, idx, NULL_TREE, NULL_TREE);
-      gsi_insert_before (gsi, gimple_build_assign (ref, vals[i]),
-                         GSI_SAME_STMT);
-    }
-  return build_fold_addr_expr (var);
-}
-
-/* ------------------------------------------------------------------ */
-/* Emit IFN_RISCV_ATTN and wipe original loop body                     */
+/* Emit a call to __builtin_riscv_attn and wipe original loop body     */
 /* ------------------------------------------------------------------ */
 
 static void
@@ -447,29 +371,26 @@ attn_emit_replacement (const attn_info &mi)
   edge pre = loop_preheader_edge (mi.outer);
   gimple_stmt_iterator gsi = gsi_after_labels (pre->src);
 
-  /* Pass the four array pointers directly as register operands.
-     attn rd, rs1, rs2, rs3
-       rd  = O  (output)
-       rs1 = Q
-       rs2 = K
-       rs3 = V
-     No stack structs — avoids vdef/vuse SSA issues in DCE.  */
+  /* Known limitation: passes O, Q, K, V directly instead of building
+     the attn_ptrs/attn_dims/attn_cfg blocks docs/01-instruction-spec.md
+     section 4 requires for rs1/rs2/rs3.  No stack structs avoids
+     vdef/vuse SSA issues in DCE, at the cost of not conforming.  */
   tree ptr_type = build_pointer_type (void_type_node);
   tree o_arg = fold_convert (ptr_type, mi.o_ptr);
   tree q_arg = fold_convert (ptr_type, mi.q_ptr);
   tree k_arg = fold_convert (ptr_type, mi.k_ptr);
   tree v_arg = fold_convert (ptr_type, mi.v_ptr);
 
-  gcall *call = gimple_build_call_internal (IFN_RISCV_ATTN, 4,
-                                            o_arg, q_arg, k_arg, v_arg);
+  tree fndecl = riscv_builtin_decl_attn ();
+  gcall *call = gimple_build_call (fndecl, 4, o_arg, q_arg, k_arg, v_arg);
   gimple_set_has_volatile_ops (call, true);
   gsi_insert_before (&gsi, call, GSI_SAME_STMT);
 
   if (dump_file)
     {
       fprintf (dump_file,
-               ";; attnrec: replaced loop %d with IFN_RISCV_ATTN\n"
-               ";;   rd=O  rs1=Q  rs2=K  rs3=V (direct pointers)\n",
+               ";; attnrec: replaced loop %d with __builtin_riscv_attn\n"
+               ";;   pre-ABI direct pointers: O, Q, K, V (see known limitation)\n",
                mi.outer->num);
       print_gimple_stmt (dump_file, call, 2, TDF_SLIM);
     }
@@ -502,8 +423,12 @@ public:
 
   bool gate (function *) final override
   {
-#ifdef TARGET_ATTN
-    return TARGET_ATTN && optimize >= 2 && flag_tree_loop_optimize;
+#ifdef TARGET_ATTN_RECOGNIZE
+    /* Recognizing the idiom is useless without the instruction to
+       replace it with; the builtin decl this pass calls only exists
+       when TARGET_ATTN enabled it in riscv_init_builtins.  */
+    return (TARGET_ATTN && TARGET_ATTN_RECOGNIZE
+            && optimize >= 2 && flag_tree_loop_optimize);
 #else
     return false;
 #endif
@@ -521,7 +446,7 @@ pass_recognize_attn::execute (function *fun)
   bool changed = false;
 
   /* Only consider true top-level loops (direct children of loop 0).
-     Matching inner loops causes the IFN to be inserted inside an
+     Matching inner loops causes the call to be inserted inside an
      outer loop iteration instead of replacing the whole nest.  */
   for (auto loop : loops_list (cfun, LI_FROM_INNERMOST))
     {

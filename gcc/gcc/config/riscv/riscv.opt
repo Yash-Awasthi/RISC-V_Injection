@@ -685,3 +685,9 @@ Enable (default) or disable generation of vector segment load/store instructions
 mattn
 Target Var(TARGET_ATTN) Init(0)
 Enable the custom fused-attention instruction.
+
+mattn-recognize
+Target Var(TARGET_ATTN_RECOGNIZE) Init(0)
+Enable automatic recognition of the scaled-dot-product-attention loop
+idiom and its replacement with the fused-attention instruction.  This
+is experimental: see the pass source for known limitations.

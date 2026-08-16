@@ -130,6 +130,7 @@ AVAIL (zbb64, TARGET_ZBB && TARGET_64BIT)
 AVAIL (zbb64_or_zbkb64, (TARGET_ZBKB || TARGET_ZBB) && TARGET_64BIT)
 AVAIL (zbb_or_zbkb, (TARGET_ZBKB || TARGET_ZBB))
 AVAIL (hint_pause, (!0))
+AVAIL (attn, TARGET_ATTN)
 
 // CORE-V AVAIL
 AVAIL (cvmac, TARGET_XCVMAC && !TARGET_64BIT)
@@ -216,6 +217,10 @@ static const struct riscv_builtin_description riscv_builtins[] = {
   DIRECT_BUILTIN (frflags, RISCV_USI_FTYPE, hard_float),
   DIRECT_NO_TARGET_BUILTIN (fsflags, RISCV_VOID_FTYPE_USI, hard_float),
   RISCV_BUILTIN (pause, "pause", RISCV_BUILTIN_DIRECT_NO_TARGET, RISCV_VOID_FTYPE, hint_pause),
+
+  DIRECT_NO_TARGET_BUILTIN (attn,
+			    RISCV_VOID_FTYPE_VOID_PTR_VOID_PTR_VOID_PTR_VOID_PTR,
+			    attn),
 };
 
 /* Index I is the function declaration for riscv_builtins[I], or null if the
@@ -332,6 +337,15 @@ riscv_builtin_decl (unsigned int code, bool initialize_p ATTRIBUTE_UNUSED)
       return riscv_vector::builtin_decl (subcode, initialize_p);
     }
   return error_mark_node;
+}
+
+/* Return the function decl for __builtin_riscv_attn, for use by
+   tree-ssa-attn.cc when it builds a direct call.  */
+
+tree
+riscv_builtin_decl_attn (void)
+{
+  return GET_BUILTIN_DECL (CODE_FOR_riscv_attn);
 }
 
 /* Take argument ARGNO from EXP's argument list and convert it into

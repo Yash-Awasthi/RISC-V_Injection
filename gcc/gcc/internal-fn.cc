@@ -708,25 +708,6 @@ expand_UBSAN_NULL (internal_fn, gcall *)
   gcc_unreachable ();
 }
 
-static void
-expand_RISCV_ATTN (internal_fn, gcall *stmt)
-{
-  /* R4-type: attn rd, rs1, rs2, rs3
-       rd  = &{ O_ptr }              output pointer block
-       rs1 = &{ Q_ptr, K_ptr, V_ptr} input pointer block
-       rs2 = &{ N, D, H }            dimension block (int64)
-       rs3 = &{ scale_bits, flags }  1/sqrt(D) as float32 bits + flags */
-  rtx out   = expand_normal (gimple_call_arg (stmt, 0));
-  rtx qkv   = expand_normal (gimple_call_arg (stmt, 1));
-  rtx dims  = expand_normal (gimple_call_arg (stmt, 2));
-  rtx scale = expand_normal (gimple_call_arg (stmt, 3));
-  out   = force_reg (Pmode, out);
-  qkv   = force_reg (Pmode, qkv);
-  dims  = force_reg (Pmode, dims);
-  scale = force_reg (Pmode, scale);
-  emit_insn (gen_riscv_attn (out, qkv, dims, scale));
-}
-
 /* This should get expanded in the sanopt pass.  */
 
 static void
