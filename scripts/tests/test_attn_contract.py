@@ -40,6 +40,9 @@ from attn_model import ATTN_STRUCTS  # noqa: E402
 
 OPC_C = REPO / "binutils" / "opcodes" / "riscv-opc.c"
 SDPA_S = REPO / "demo" / "sdpa_test.s"
+SDPA_C = REPO / "demo" / "sdpa_test.c"
+INTERNAL_FN_DEF = REPO / "gcc" / "gcc" / "internal-fn.def"
+RISCV_OPT = REPO / "gcc" / "gcc" / "config" / "riscv" / "riscv.opt"
 
 OPC_H = opcodes.find_opc_h(REPO)
 assert OPC_H is not None, "riscv-opc.h not found under repo root"
@@ -212,6 +215,35 @@ def test_attn_h_struct_sizes_are_8_byte_multiples() -> None:
     for name, fields in ATTN_STRUCTS.items():
         size = sum(width for _, _, width in fields)
         assert size % 8 == 0, f"{name} size {size} is not 8-byte aligned"
+
+
+def test_sdpa_test_compile_comment_needs_both_flags() -> None:
+    # attnrec's gate is TARGET_ATTN && TARGET_ATTN_RECOGNIZE (both
+    # riscv.opt flags default off, neither implies the other), so the
+    # demo comment's compile command must pass both.
+    opt_text = RISCV_OPT.read_text(encoding="utf-8")
+    assert re.search(r"^mattn-recognize$", opt_text, re.MULTILINE), \
+        f"mattn-recognize flag missing from {RISCV_OPT}"
+
+    text = SDPA_C.read_text(encoding="utf-8")
+    assert "-mattn -mattn-recognize -O2" in text, \
+        "sdpa_test.c compile-command comment must show both -mattn " \
+        "and -mattn-recognize, matching the two-flag attnrec gate"
+
+
+def test_sdpa_test_no_dangling_ifn_reference() -> None:
+    # IFN_RISCV_ATTN was removed from internal-fn.def; the pass now
+    # emits a call to __builtin_riscv_attn instead of an internal
+    # function. The demo comment must not point at the dead symbol.
+    ifn_text = INTERNAL_FN_DEF.read_text(encoding="utf-8")
+    assert "RISCV_ATTN" not in ifn_text, \
+        f"RISCV_ATTN reappeared in {INTERNAL_FN_DEF}; " \
+        "update sdpa_test.c's replacement comment if this is intentional"
+
+    text = SDPA_C.read_text(encoding="utf-8")
+    assert ".RISCV_ATTN" not in text, \
+        "sdpa_test.c still references the removed IFN_RISCV_ATTN symbol"
+    assert "__builtin_riscv_attn ((void*)O, (void*)Q, (void*)K, (void*)V)" in text
 
 
 if __name__ == "__main__":

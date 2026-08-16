@@ -7,7 +7,7 @@
  *
  * Compile command:
  *   riscv64-unknown-elf-gcc \
- *       -mattn -O2 \
+ *       -mattn -mattn-recognize -O2 \
  *       -S sdpa_test.c -o sdpa_test.s
  *
  * ─────────────────────────────────────────────────────────────────
@@ -107,10 +107,10 @@
  *   V[N][D] — value  matrix (N tokens x D dims, row-major float32)
  *   O[N][D] — output matrix (written by attn instruction in hardware)
  *
- * With -mattn -O2, the attnrec pass replaces this entire function body
- * at the GIMPLE level with:
+ * With -mattn -mattn-recognize -O2, the attnrec pass replaces this
+ * entire function body at the GIMPLE level with:
  *
- *   .RISCV_ATTN ((void*)O, (void*)Q, (void*)K, (void*)V)
+ *   __builtin_riscv_attn ((void*)O, (void*)Q, (void*)K, (void*)V)
  *
  * which the RISC-V backend lowers to:
  *
