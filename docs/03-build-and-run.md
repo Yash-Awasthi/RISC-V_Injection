@@ -9,6 +9,18 @@
 > the symptom; nine times out of ten it is one of the eleven issues
 > documented there.
 
+> **Verification status of this document.** Every command below was
+> written and checked by reading the compiler and assembler sources
+> it exercises, not by running them: this environment has no host
+> C compiler, no WSL, and no way to build GCC. Three pieces of
+> deferred work — the `__builtin_riscv_attn` builtin, the
+> `-mattn`/`-mattn-recognize` gate split, and the negative-guard
+> sweep in `demo/failures/` — are batched here so that whoever has
+> a real Linux box builds all three in **one** `make` and runs
+> **one** checklist (§10, plus [`demo/verify_attn.sh`](../demo/verify_attn.sh))
+> instead of three separate build/verify cycles. See §11 for where
+> to record what that run actually printed.
+
 ---
 
 ## Table of contents
@@ -18,11 +30,12 @@
 3. [Configuring the build](#3-configuring-the-build)
 4. [Building (45–90 minutes)](#4-building-4590-minutes)
 5. [Layer-1 verification — the assembler accepts `attn`](#5-layer-1-verification--the-assembler-accepts-attn)
-6. [Layer-2 verification — the compiler emits `attn` automatically](#6-layer-2-verification--the-compiler-emits-attn-automatically)
-7. [Negative test — `attn` is *not* emitted without `-mattn`](#7-negative-test--attn-is-not-emitted-without--mattn)
+6. [Layer-2 verification — the builtin emits `attn` (primary path)](#6-layer-2-verification--the-builtin-emits-attn-primary-path)
+7. [Gate checks — builtin without `-mattn`, recognizer without `-mattn-recognize`](#7-gate-checks--builtin-without--mattn-recognizer-without--mattn-recognize)
 8. [Inspecting the GIMPLE dump](#8-inspecting-the-gimple-dump)
 9. [Incremental rebuilds while developing](#9-incremental-rebuilds-while-developing)
 10. [Test matrix — what should pass](#10-test-matrix--what-should-pass)
+11. [Recording the actual verification run](#11-recording-the-actual-verification-run)
 
 ---
 
@@ -229,70 +242,91 @@ If either is wrong, see
 
 ---
 
-## 6. Layer-2 verification — the compiler emits `attn` automatically
+## 6. Layer-2 verification — the builtin emits `attn` (primary path)
 
-Now the more interesting test: does the modified GCC, when compiling
-plain C with `-mattn -O2`, *automatically* emit our instruction?
-
-The repository ships a test source `sdpa_test.c` containing a fused
-SDPA implementation (one outer `i`-loop wrapping all four phases —
-the form the matcher recognises). Compile it to assembly:
+The primary, non-experimental way to get `attn` out of the compiler
+is the explicit builtin: `__builtin_riscv_attn(rd, rs1, rs2, rs3)`,
+declared in `gcc/gcc/config/riscv/riscv-builtins.cc` and gated on
+plain `-mattn`. The repository ships `demo/sdpa_builtin.c`, which
+wraps it in a portable `attn_sdpa()` helper (`demo/attn.h`) — no
+pattern matching is involved, the call is written directly at the
+source site. Compile it to assembly:
 
 ```bash
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
     -mattn -O2 \
-    -fno-schedule-insns -fno-schedule-insns2 \
-    -S sdpa_test.c -o sdpa_test.s
+    -S sdpa_builtin.c -o sdpa_builtin.s
 ```
 
 Search for the instruction:
 
 ```bash
-grep -n '\battn\b' sdpa_test.s && echo "PASS — attn emitted" || echo "FAIL"
+grep -n '\battn\b' sdpa_builtin.s && echo "PASS — attn emitted" || echo "FAIL"
 ```
 
-Expected:
+Expected: a line containing `attn` (register allocation of the four
+operands may vary with the surrounding code).
 
-```
-88:        attn    a3,a0,a1,a2
-PASS — attn emitted
-```
+No scheduler-disabling flags are needed here. `riscv_attn` carries
+`type "ghost"` in `riscv.md`, so `riscv_sched_variable_issue` has a
+real answer for it and both scheduling passes run normally. See
+[Issue 7](05-troubleshooting.md#issue-7--ice-in-riscv_sched_variable_issue)
+for the ICE this used to trigger.
 
-Why the `-fno-schedule-insns` flags? Until the modified
-`riscv.md` has propagated through every stage of the cross-build,
-the RTL scheduler may still be using a stale opinion about the
-instruction's `type` attribute and assert. The two flags disable
-both rounds of insn scheduling for the C compile and are *belt
-and braces* — once you have rebuilt with `type "ghost"` set, you
-should be able to remove them. They are kept in the documented
-recipe because they make the verification reproducible across
-partial rebuilds.
+The repository also ships `sdpa_test.c`, a hand-fused loop nest that
+the *experimental* idiom recognizer can be made to rewrite into the
+same instruction — see §7 below and
+[`02-compiler-pass.md`](02-compiler-pass.md) for why that path is
+opt-in and separately gated.
 
 ---
 
-## 7. Negative test — `attn` is *not* emitted without `-mattn`
+## 7. Gate checks — builtin without `-mattn`, recognizer without `-mattn-recognize`
 
-It is just as important to confirm that **omitting** `-mattn`
-suppresses the instruction. This is a direct check of the gate:
+Two independent gates need checking, because two independent
+surfaces share the `attn` mnemonic:
+
+### 7.1 The builtin errors without `-mattn`
+
+`__builtin_riscv_attn` is only registered as a known function when
+`TARGET_ATTN` is set (`AVAIL (attn, TARGET_ATTN)` in
+`riscv-builtins.cc`). Without `-mattn`, GCC does not know the name,
+and calling an unrecognised `__builtin_*` identifier is a
+compile-time error, not merely a warning:
 
 ```bash
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
-    -O2 -S sdpa_test.c -o sdpa_test_no_mattn.s
-
-if grep -q '\battn\b' sdpa_test_no_mattn.s ; then
-    echo "FAIL — attn emitted despite no -mattn (gate broken)"
-else
-    echo "GATE OK — attn correctly suppressed"
-fi
+    -O2 -S sdpa_builtin.c -o sdpa_builtin_no_mattn.s
+echo "exit: $?"
 ```
 
-Expected: `GATE OK`.
+Expected: non-zero exit, with a diagnostic naming
+`__builtin_riscv_attn` (typically "implicit declaration of
+function"). If this instead compiles cleanly, the availability
+predicate in `riscv-builtins.cc` is not doing its job.
 
-If this fails, the gate condition in
-`pass_recognize_attn::gate()` is wrong, or `TARGET_ATTN` is being
-forced on by some other code path. See
-[§4 of `02-compiler-pass.md`](02-compiler-pass.md#4-the-pass-class--boilerplate)
-for what the gate must look like.
+### 7.2 `-mattn` alone does not run the recognizer; `-mattn -mattn-recognize` does
+
+This is the split that makes the recognizer opt-in. Compile
+`sdpa_test.c` — the file the recognizer is meant to match — first
+with `-mattn` alone, then with both flags:
+
+```bash
+$HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
+    -mattn -O2 -S sdpa_test.c -o sdpa_test_mattn_only.s
+grep -c '\battn\b' sdpa_test_mattn_only.s   # expect: 0
+
+$HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
+    -mattn -mattn-recognize -O2 -S sdpa_test.c -o sdpa_test_recognize.s
+grep -c '\battn\b' sdpa_test_recognize.s    # expect: 1 or more
+```
+
+If the first `grep` finds anything, the gate in
+`pass_recognize_attn::gate()` is not checking
+`TARGET_ATTN_RECOGNIZE` correctly — see
+[§4 of `02-compiler-pass.md`](02-compiler-pass.md#4-the-pass-class--boilerplate).
+If the second `grep` finds nothing, the matcher itself rejected
+`sdpa_test.c`; dump the GIMPLE (§8) to see which check failed.
 
 ---
 
@@ -303,7 +337,7 @@ GIMPLE IR after each pass. For our pass:
 
 ```bash
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
-    -mattn -O2 \
+    -mattn -mattn-recognize -O2 \
     -fdump-tree-attnrec-details \
     -c sdpa_test.c -o sdpa_test.o
 
@@ -312,7 +346,7 @@ cat sdpa_test.c.*attnrec*
 
 The dump shows, for each loop the pass examined, which of the five
 matching conditions passed or failed and (on success) the
-`IFN_RISCV_ATTN` call that was emitted. The format is described in
+`__builtin_riscv_attn` call that was emitted. The format is described in
 [§8 of `02-compiler-pass.md`](02-compiler-pass.md#8-reading-the-gimple-dump).
 
 This dump is *the* primary debugging tool while iterating on the
@@ -377,7 +411,10 @@ add a new pass source file.
 ## 10. Test matrix — what should pass
 
 When everything is in order, the following table of checks all
-return `PASS`. This is a useful CI-style script to keep around.
+return `PASS`. This is a useful CI-style script to keep around — it
+is exactly what [`demo/verify_attn.sh`](../demo/verify_attn.sh)
+automates as the "one checklist" referred to at the top of this
+document.
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
@@ -385,17 +422,49 @@ return `PASS`. This is a useful CI-style script to keep around.
 | 2 | Hello-world links | `gcc /tmp/t.c -o /tmp/t.elf` | exit 0 |
 | 3 | Assembler accepts `attn` | `as attn_asm.S` | exit 0 |
 | 4 | objdump prints `attn` | `objdump -d attn_asm.o` | line contains `attn ` |
-| 5 | Compiler emits `attn` (positive) | `gcc -mattn -O2 -S sdpa_test.c` | `grep '\battn\b' sdpa_test.s` matches |
-| 6 | Compiler suppresses `attn` (negative) | `gcc -O2 -S sdpa_test.c` | `grep '\battn\b'` does *not* match |
-| 7 | GIMPLE dump exists | `gcc -mattn -O2 -fdump-tree-attnrec-details -c sdpa_test.c` | `sdpa_test.c.*attnrec*` file present |
-| 8 | Dump records emission | `cat sdpa_test.c.*attnrec*` | string `IFN_RISCV_ATTN` appears |
+| 5 | Builtin emits `attn` (primary path) | `gcc -mattn -O2 -S sdpa_builtin.c` | `grep '\battn\b' sdpa_builtin.s` matches |
+| 6 | Builtin without `-mattn` errors | `gcc -O2 -S sdpa_builtin.c` | non-zero exit, diagnostic names `__builtin_riscv_attn` |
+| 7 | `-mattn` alone does not recognize | `gcc -mattn -O2 -S sdpa_test.c` | `grep -c '\battn\b'` is `0` |
+| 8 | `-mattn -mattn-recognize` does recognize | `gcc -mattn -mattn-recognize -O2 -S sdpa_test.c` | `grep -c '\battn\b'` is `>0` |
+| 9 | GIMPLE dump exists | `gcc -mattn -mattn-recognize -O2 -fdump-tree-attnrec-details -c sdpa_test.c` | `sdpa_test.c.*attnrec*` file present |
+| 10 | Dump records emission | `cat sdpa_test.c.*attnrec*` | string `__builtin_riscv_attn` appears |
+| 11 | Nine of ten `demo/failures/fail_*.c` rejected | `gcc -mattn -mattn-recognize -O2 -S fail_*.c` for each of the 10 files | `grep '\battn\b'` does *not* match, for 9 of 10 — the tenth, `fail_scattered-signature-known-false-positive.c`, is a documented, currently-unfixed false positive and is expected to match; see [`../demo/failures/README.md`](../demo/failures/README.md#known-false-positive-fail_scattered-signature-known-false-positivec) |
 
-If checks 1–4 pass but 5 fails, the pass is built but its gate or
-matching is broken.
-If 5 passes but 6 fails, the gate is broken (the pass is firing
-unconditionally).
-If 7 passes but 8 fails, the pass is being scheduled but rejecting
-all loops — read the dump for the reason.
+If checks 1–4 pass but 5 fails, the builtin is not registered
+correctly — check `AVAIL (attn, TARGET_ATTN)` and the
+`DIRECT_NO_TARGET_BUILTIN (attn, ...)` row in `riscv-builtins.cc`.
+If 5 passes but 6 fails, the availability predicate is firing
+unconditionally (the builtin is visible even without `-mattn`).
+If 7 fails, `pass_recognize_attn::gate()` is still keyed on
+`TARGET_ATTN` instead of `TARGET_ATTN_RECOGNIZE` — see
+[§4 of `02-compiler-pass.md`](02-compiler-pass.md#4-the-pass-class--boilerplate).
+If 8 fails, the recognizer's gate is correct but the matcher itself
+rejected `sdpa_test.c`; dump the GIMPLE (check 9/10) for the reason.
+If check 11 fails for any file, the matcher has regressed toward a
+false positive — see [`demo/failures/README.md`](../demo/failures/README.md)
+for which reject path that file is supposed to exercise.
+
+---
+
+## 11. Recording the actual verification run
+
+**Status: not yet run.** Everything above was derived by reading
+`gcc/gcc/config/riscv/riscv-builtins.cc`, `riscv.opt`, `riscv.md`,
+and `tree-ssa-attn.cc`, and reasoning about what a correct build
+does — it has not been executed against a real, built
+`riscv64-unknown-elf-gcc` anywhere. This environment has no host C
+compiler, no WSL, and no cross toolchain, so a build was never
+attempted here.
+
+When someone with a Linux box (see §1) runs the batched build and
+the checklist in §10 — most conveniently via
+`./demo/verify_attn.sh demo/sdpa_builtin.c` plus the
+`demo/failures/` sweep — replace this paragraph with the literal
+`PASS`/`FAIL` summary line the script printed, the GCC version
+string from check 1, and the date of the run. Do not summarize or
+round the result; if something failed, say which check and paste
+the diagnostic. A `PASS` claim in this section that nobody actually
+observed is worse than an honest "not yet run".
 
 ---
 

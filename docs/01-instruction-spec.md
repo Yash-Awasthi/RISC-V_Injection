@@ -36,14 +36,13 @@
 | Required ISA | RV64GC (validated); the encoding is XLEN-agnostic |
 | Privilege | unprivileged |
 
-The choice of R4-type rather than R-type is deliberate. The original
-proof-of-concept used R-type and packed three matrix pointers into
-two stack-allocated descriptor structs (one for dimensions, one for
-the Q/K/V/O pointers). That worked, but it required the compiler
-to materialise structs on the stack and burned cycles on each
-invocation. R4-type lets us pass **four pointers directly in
-registers**, eliminating the descriptor structs entirely; this is
-the form documented here and shipped in this repository.
+The choice of R4-type rather than R-type is deliberate: it gives
+`attn` four independent register operands instead of two, room
+enough to split the ABI into four small blocks (output, QKV, dims,
+scale — see §4) rather than cramming everything into one or two
+descriptor structs. The encoding only fixes the register *count*;
+what each register points at is an ABI convention, defined once in
+§4.
 
 ---
 
@@ -61,12 +60,12 @@ the form documented here and shipped in this repository.
 | field    | bits      | width | fixed value | hex   | role for `attn`                         |
 |----------|-----------|-------|-------------|-------|-----------------------------------------|
 | `opcode` | `[6:0]`   | 7     | `0001011`   | `0x0b`| identifies the `custom-0` slot          |
-| `rd`     | `[11:7]`  | 5     | varies      | —     | integer register holding **O** pointer  |
+| `rd`     | `[11:7]`  | 5     | varies      | —     | integer register holding the **output matrix** pointer directly (§4) |
 | `funct3` | `[14:12]` | 3     | `000`       | `0x0` | sub-operation                           |
-| `rs1`    | `[19:15]` | 5     | varies      | —     | integer register holding **Q** pointer  |
-| `rs2`    | `[24:20]` | 5     | varies      | —     | integer register holding **K** pointer  |
+| `rs1`    | `[19:15]` | 5     | varies      | —     | integer register holding a pointer to the **attn_ptrs block** (§4) |
+| `rs2`    | `[24:20]` | 5     | varies      | —     | integer register holding a pointer to the **attn_dims block** (§4) |
 | `funct2` | `[26:25]` | 2     | `00`        | `0x0` | R4-type discriminator for `attn`        |
-| `rs3`    | `[31:27]` | 5     | varies      | —     | integer register holding **V** pointer  |
+| `rs3`    | `[31:27]` | 5     | varies      | —     | integer register holding a pointer to the **attn_cfg block** (§4) |
 
 Three of the seven fields (`opcode`, `funct3`, `funct2`) are fixed
 constants that *identify the instruction*. The remaining four
@@ -119,49 +118,71 @@ exactly what R4-type prescribes.
 
 ## 4. Operand convention and ABI
 
+> This section is the single normative definition of the `attn`
+> operand ABI. Every other file in this repository that describes
+> what `rd`, `rs1`, `rs2`, `rs3` point at refers back to this
+> section instead of restating it.
+
 Assembly syntax:
 
 ```asm
 attn   rd, rs1, rs2, rs3
 ```
 
-Semantic role of each operand:
-
-| position | architectural register | logical name | data referenced |
-|----------|------------------------|--------------|------------------|
-| `rd`     | any of `x0`–`x31`      | **O** pointer| output matrix (written by the hardware) |
-| `rs1`    | any of `x0`–`x31`      | **Q** pointer| query matrix             |
-| `rs2`    | any of `x0`–`x31`      | **K** pointer| key matrix               |
-| `rs3`    | any of `x0`–`x31`      | **V** pointer| value matrix             |
-
 **All four operands are integer registers**, each holding a 64-bit
-virtual address (on RV64; 32-bit on RV32) of a matrix that lives in
-memory. The matrices themselves are arrays of single-precision
-IEEE-754 binary32 floating-point values, stored row-major.
+virtual address (on RV64; 32-bit on RV32). `rd` points directly at
+the output matrix; `rs1`, `rs2`, `rs3` each point at a small,
+fixed-layout block that carries the input pointers, the shape, and
+the scale:
 
-The shape arguments (`N` and `d`) are *not* operands of `attn`. The
-proposed accelerator is expected either to:
+| position | logical name  | points to (C-equivalent layout) | size |
+|----------|---------------|----------------------------------|------|
+| `rd`     | `O`           | the output matrix directly — `void *`, no wrapper block | 8 B |
+| `rs1`    | `attn_ptrs`   | `struct { const void *q, *k, *v; }` | 24 B |
+| `rs2`    | `attn_dims`   | `struct { uint64_t n, d, h; }` — `h` is head count, `1` for the single-head default | 24 B |
+| `rs3`    | `attn_cfg`    | `struct { uint32_t scale_bits, flags; }` — `scale_bits` holds the IEEE-754 binary32 bit pattern of `1/sqrt(d)`; `flags` is reserved and currently always `0` | 8 B |
 
-* read them from architecturally visible CSRs configured before the
-  instruction, or
-* be specialised for a fixed shape known at chip-fabrication time
-  (typical of ASIC accelerators), or
-* infer them from the matrices' allocated buffer sizes via metadata
-  in TLB/DMA descriptors.
+These three struct names and layouts are not just documentation:
+they are the exact structs declared in
+[`../demo/attn.h`](../demo/attn.h), the reference C-side realisation
+of this ABI, checked field-for-field against
+[`../tools/attn_model.py`](../tools/attn_model.py)'s `ATTN_STRUCTS`
+by `scripts/tests/test_attn_contract.py`.
 
-The compiler-side prototype in this repository simply assumes the
-hardware "knows" the shape; the test program `sdpa_test.c` uses fixed
-`N = d = 32`.
+The shape of the problem — `N, D, H` — is therefore no longer
+implicit: it travels in the `attn_dims` block that `rs2` points to,
+and the hardware reads it from memory instead of needing dedicated
+CSRs or a shape fixed at chip-fabrication time. `Q`, `K`, `V`, `O`
+remain `[N x D]` row-major float32 matrices; only the way their
+addresses reach the instruction has changed, from four direct
+pointers to one level of indirection for the three input-side
+operands.
+
+Building the three input blocks — allocating them, filling in their
+fields, keeping them alive across the instruction — is the caller's
+job. The instruction encoding, the assembler entry, and the RTL
+pattern are unaffected by this choice; they still see four plain
+integer-register operands. Only what `rs1`, `rs2`, `rs3` point at
+has changed.
 
 A representative emitted instruction:
 
 ```asm
 attn   a3, a0, a1, a2     # GCC's typical assignment under -O2
-                          # rd  = a3 = O
-                          # rs1 = a0 = Q
-                          # rs2 = a1 = K
-                          # rs3 = a2 = V
+                          # rd  = a3 = O                (output matrix)
+                          # rs1 = a0 = &attn_ptrs { q, k, v }
+                          # rs2 = a1 = &attn_dims { n, d, h }
+                          # rs3 = a2 = &attn_cfg  { scale_bits, flags }
 ```
+
+**Known limitation.** The GIMPLE pass that emits `attn`
+(`gcc/gcc/tree-ssa-attn.cc`) predates this ABI: its call site still
+passes the four raw `O`/`Q`/`K`/`V` pointers directly instead of
+building the `attn_ptrs`/`attn_dims`/`attn_cfg` blocks above. That
+path is flagged experimental and non-conforming in the pass's own
+known-limitation comment; treat any `attn` the idiom-recognition
+pass emits today accordingly. The explicit-call path through
+`demo/attn.h` and `__builtin_riscv_attn` does conform.
 
 ---
 
@@ -228,7 +249,9 @@ $$
 with the following conventions:
 
 * `Q`, `K`, `V`, `O` are all `[N × d]` row-major float32 matrices in
-  memory, addressed by the four integer-register operands.
+  memory. `O` is addressed directly by `rd`; `Q`, `K`, `V` are
+  addressed indirectly through the `attn_ptrs` block that `rs1`
+  points at (§4).
 * `softmax` is applied **row-wise** to the `[N × N]` intermediate
   similarity matrix `S = Q · Kᵀ / √d` and is numerically stable
   (subtract the row maximum before exponentiating).
@@ -248,8 +271,9 @@ conforming hardware implementation might:
 For the simulator-side prototype that will form Phase 4 of the
 project (see [`07-research-context.md` §5](07-research-context.md#5-future-work)),
 a reasonable starting point is the straightforward four-phase
-implementation in `riscv-isa-sim/riscv/insns/attn.h` reading the
-four pointers from `rs1/rs2/rs3` and writing through `rd`.
+implementation in `riscv-isa-sim/riscv/insns/attn.h`, reading the
+`attn_ptrs`/`attn_dims`/`attn_cfg` blocks (§4) through `rs1`, `rs2`,
+`rs3` and writing the output matrix directly through `rd`.
 
 ### Status flags, exceptions, memory ordering
 
@@ -339,46 +363,23 @@ Three things to note:
   use it because we are not committing to a pipeline model for the
   hardware accelerator yet.
 
-### 7.3 GCC — internal function
+### 7.3 GCC — internal function (removed)
 
-`gcc/gcc/internal-fn.def`:
-
-```c
-DEF_INTERNAL_FN (RISCV_ATTN, ECF_NOTHROW, NULL)
-```
-
-`gcc/gcc/internal-fn.cc` (excerpt):
-
-```c
-static void
-expand_RISCV_ATTN (internal_fn, gcall *stmt)
-{
-  rtx out = expand_normal (gimple_call_arg (stmt, 0));
-  rtx q   = expand_normal (gimple_call_arg (stmt, 1));
-  rtx k   = expand_normal (gimple_call_arg (stmt, 2));
-  rtx v   = expand_normal (gimple_call_arg (stmt, 3));
-  out = force_reg (Pmode, out);
-  q   = force_reg (Pmode, q);
-  k   = force_reg (Pmode, k);
-  v   = force_reg (Pmode, v);
-  emit_insn (gen_riscv_attn (out, q, k, v));
-}
-```
-
-The expander is intentionally trivial: it takes the four GIMPLE
-call arguments, materialises each as a Pmode register (`Pmode` is
-`DImode` on RV64 and `SImode` on RV32), and hands them to
-`gen_riscv_attn`, the helper auto-generated by GCC from the
-`define_insn` above.
-
-`ECF_NOTHROW` (and *not* `ECF_LEAF`) tells GCC that the call cannot
-raise C++ exceptions but otherwise should be treated as having
-arbitrary memory effects. `ECF_LEAF` was tried and removed —
-see [`05-troubleshooting.md` Issue 6](05-troubleshooting.md#issue-6--ice-in-propagate_necessity-dce).
+Earlier revisions of this compiler routed `attnrec` through a
+dedicated internal function, `IFN_RISCV_ATTN`, expanded by
+`expand_RISCV_ATTN` in `gcc/gcc/internal-fn.cc`. That internal
+function has since been deleted from the tree in favour of the
+builtin path in §7.5: `attnrec` now calls `__builtin_riscv_attn`
+directly (`gcc/gcc/tree-ssa-attn.cc`, `attn_emit_replacement`)
+instead of emitting a call to a bespoke internal function. Neither
+`IFN_RISCV_ATTN` nor `expand_RISCV_ATTN` exist in the current
+source tree; this subsection is kept only as a historical note so
+old dumps or patches that mention `IFN_RISCV_ATTN` are not
+mistaken for a live mechanism.
 
 ### 7.4 The path from C source to the bit pattern
 
-Putting the four entries together:
+Putting the current entries together:
 
 ```
 sdpa_test.c                           ┐
@@ -388,10 +389,11 @@ GIMPLE  loop nest                  │
                                    │ GIMPLE optimisation passes
       ▼                            │
 attnrec pass — recognises pattern, │ this project
-emits IFN_RISCV_ATTN gimple call   │
+calls __builtin_riscv_attn (§7.5)  │
                                    │
       ▼                            │
-expand_RISCV_ATTN — RTL expander   │
+builtin expansion — no hand-written│
+expander, see §7.5                 │
                                    │
       ▼                            │
 RTL insn matches "riscv_attn"      │
@@ -410,6 +412,60 @@ encodes the mnemonic into          │
       ▼
 ELF object code
 ```
+
+### 7.5 GCC — explicit builtin
+
+Alongside the idiom-recognition path in §7.1–§7.4, the compiler also
+exposes `attn` directly as a builtin function:
+
+```c
+void __builtin_riscv_attn(void *rd, void *rs1, void *rs2, void *rs3);
+```
+
+This is a straight 1:1 mapping onto the encoding in §1–§3: the four
+`void *` arguments correspond directly to `rd`, `rs1`, `rs2`, `rs3`,
+in that order, with no shape inference and no semantics attached by
+the compiler beyond "put these four addresses in registers and emit
+`attn`". A caller who wants the softmax-attention behaviour of §6 is
+responsible for supplying pointers that satisfy it; the compiler does
+not check.
+
+Declared in `gcc/gcc/config/riscv/riscv-builtins.cc`:
+
+```c
+AVAIL (attn, TARGET_ATTN)
+
+...
+
+DIRECT_NO_TARGET_BUILTIN (attn,
+			  RISCV_VOID_FTYPE_VOID_PTR_VOID_PTR_VOID_PTR_VOID_PTR,
+			  attn),
+```
+
+`DIRECT_NO_TARGET_BUILTIN` maps the builtin straight onto
+`CODE_FOR_riscv_attn` — the same `define_insn` from §7.2 — so this
+path adds no new RTL pattern and no new expander.
+`RISCV_VOID_FTYPE_VOID_PTR_VOID_PTR_VOID_PTR_VOID_PTR` is a new
+prototype row in `gcc/gcc/config/riscv/riscv-ftypes.def`:
+
+```c
+DEF_RISCV_FTYPE (4, (VOID, VOID_PTR, VOID_PTR, VOID_PTR, VOID_PTR))
+```
+
+`AVAIL (attn, TARGET_ATTN)` gates the builtin on the same `-mattn`
+flag as the idiom-recognition path (§8); calling
+`__builtin_riscv_attn` without `-mattn` is a compile-time error,
+the same as calling any other target-gated builtin outside its `-m`
+flag.
+
+`riscv_attn`'s operands are declared `register_operand:DI`. GCC's
+generic builtin-expansion machinery (`maybe_legitimize_operand` in
+`optabs.cc`) copies any input operand that fails an insn's predicate
+into a fresh pseudo register, so the four pointer arguments do not
+need to already sit in registers at the call site — an address
+computed on the fly, or loaded from a local, is copied into a
+register automatically before `attn` is emitted. No hand-written
+expander is needed for this.
 
 ---
 
@@ -467,11 +523,13 @@ funct3       :  000
 funct2       :  00
 MATCH        :  0x0000000b
 MASK         :  0x0600707f
-Operands     :  rd  = O  pointer (output)
-                rs1 = Q  pointer (query)
-                rs2 = K  pointer (key)
-                rs3 = V  pointer (value)
+Operands     :  rd  = O               output matrix, direct pointer (§4)
+                rs1 = &attn_ptrs { q, k, v }                    (§4)
+                rs2 = &attn_dims { n, d, h }                    (§4)
+                rs3 = &attn_cfg  { scale_bits, flags }          (§4)
 Data type    :  IEEE-754 binary32 (float), row-major matrices
+Builtin      :  void __builtin_riscv_attn(void*,void*,void*,void*)
+                 -- rd,rs1,rs2,rs3, 1:1 with the encoding
 Compile flag :  -mattn
 GCC version  :  15.2.0
 Validated on :  rv64gc / lp64d, GNU/Newlib bare-metal, Ubuntu 24.04

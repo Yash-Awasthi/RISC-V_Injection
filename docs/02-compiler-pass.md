@@ -6,6 +6,18 @@
 > and now wants to know exactly what the `attnrec` pass does and why
 > it is correct.
 
+> **Known limitation.** This pass is experimental and is off by
+> default, gated by its own flag `-mattn-recognize` (separate from
+> `-mattn`, which only makes the `attn` instruction and its builtin
+> available). The matcher scans the whole function rather than a
+> single loop body, so it does not prove that the statements it
+> collects execute in the order a real data dependency would
+> require. Operand roles (which base is `Q`, `K`, `V`, or `O`) are
+> guessed positionally from scan order, not proven by data flow. The
+> pass never proves that the matched loop nest computes scaled
+> dot-product attention; it only proves that the syntactic shape
+> matches. Do not enable this pass by default.
+
 This document is the conceptual companion to the source file
 `gcc/gcc/tree-ssa-attn.cc` (~500 lines) and to the manual edits in
 `gcc/gcc/passes.def`, `gcc/gcc/tree-pass.h`, and
@@ -20,7 +32,7 @@ This document is the conceptual companion to the source file
 3. [Where the pass runs and why](#3-where-the-pass-runs-and-why)
 4. [The pass class — boilerplate](#4-the-pass-class--boilerplate)
 5. [The five matching conditions](#5-the-five-matching-conditions)
-6. [Emitting `IFN_RISCV_ATTN`](#6-emitting-ifn_riscv_attn)
+6. [Emitting `__builtin_riscv_attn`](#6-emitting-__builtin_riscv_attn)
 7. [Why the loop body stays — and what removing it would take](#7-why-the-loop-body-stays-and-what-removing-it-would-take)
 8. [Reading the GIMPLE dump](#8-reading-the-gimple-dump)
 9. [Soundness, completeness, and false-positive analysis](#9-soundness-completeness-and-false-positive-analysis)
@@ -101,8 +113,9 @@ The current project deliberately rejects that approach in favour of
    `__builtin_riscv_attn` no longer compiles on x86, on a non-`-mattn`
    RISC-V target, or with a different compiler. The same source
    compiled with idiom recognition is *exactly* the same C program
-   it was before — the optimisation is opt-in via a flag, and absent
-   the flag the program runs the loop body as written.
+   it was before — the optimisation is opt-in via the experimental
+   `-mattn-recognize` flag, and absent the flag the program runs the
+   loop body as written.
 2. **Hands-off acceleration.** Existing C corpora — kernels written
    ten years ago, models exported from PyTorch via `torch.compile`
    to plain C, OpenBLAS-style GEMM kernels — can benefit without
@@ -191,8 +204,8 @@ public:
 
   bool gate (function *) final override
   {
-#ifdef TARGET_ATTN
-    return TARGET_ATTN && optimize >= 2 && flag_tree_loop_optimize;
+#ifdef TARGET_ATTN_RECOGNIZE
+    return TARGET_ATTN_RECOGNIZE && optimize >= 2 && flag_tree_loop_optimize;
 #else
     return false;
 #endif
@@ -222,9 +235,12 @@ Three details warrant attention:
 * **`TODO_update_ssa`** in `todo_flags_finish` tells GCC's pass
   manager to refresh SSA after we are done, since we have inserted
   a new GIMPLE call that defines/uses virtual operands.
-* **The gate** insists on `TARGET_ATTN`, optimisation level ≥ 2,
-  and loop optimisation enabled. At `-O0` or `-O1` the loop
-  framework state we depend on is not guaranteed.
+* **The gate** insists on `TARGET_ATTN_RECOGNIZE` (set by
+  `-mattn-recognize`), optimisation level ≥ 2, and loop optimisation
+  enabled. At `-O0` or `-O1` the loop framework state we depend on
+  is not guaranteed. `TARGET_ATTN_RECOGNIZE` is a separate flag from
+  `TARGET_ATTN`: `-mattn` alone makes the `attn` instruction and its
+  builtin available but does not run this pass.
 
 The factory function `make_pass_recognize_attn` is declared in
 `tree-pass.h` and called by `passes.def`.
@@ -339,14 +355,20 @@ false-positive in production. See §9 for a quantitative discussion.
 
 ---
 
-## 6. Emitting `IFN_RISCV_ATTN`
+## 6. Emitting `__builtin_riscv_attn`
 
 When all five checks pass, the pass:
 
 1. Resolves each of the four base pointers to a single SSA name
    (creating a temporary if the base is a constant address).
-2. Constructs a `gcall` for the internal function `IFN_RISCV_ATTN`
-   with these four arguments, in the order `(O, Q, K, V)`.
+2. Fetches the `FUNCTION_DECL` for `__builtin_riscv_attn` via
+   `riscv_builtin_decl_attn()` (declared in `riscv-protos.h`,
+   defined in `riscv-builtins.cc`) and constructs a plain `gcall` to
+   it with these four arguments, in the order `(O, Q, K, V)`. This
+   is the same builtin a programmer could call directly from C (see
+   [§7.5 of `01-instruction-spec.md`](01-instruction-spec.md#75-gcc--explicit-builtin));
+   the pass does not use an internal function or a hand-written
+   expander.
 3. Marks the call **volatile** at the GIMPLE level —
    `gimple_set_has_volatile_ops(call, true)` — so DCE
    (dead-code elimination) treats it as observably side-effecting
@@ -363,22 +385,31 @@ tree q_ptr = build_pointer_cast(cand.q_base);
 tree k_ptr = build_pointer_cast(cand.k_base);
 tree v_ptr = build_pointer_cast(cand.v_base);
 
-gcall *call = gimple_build_call_internal (IFN_RISCV_ATTN, 4,
-                                          o_ptr, q_ptr, k_ptr, v_ptr);
+tree fndecl = riscv_builtin_decl_attn ();
+gcall *call = gimple_build_call (fndecl, 4, o_ptr, q_ptr, k_ptr, v_ptr);
 gimple_set_has_volatile_ops (call, true);
 
 gimple_stmt_iterator gsi = gsi_last_bb (loop_preheader_edge (outer)->src);
 gsi_insert_after (&gsi, call, GSI_NEW_STMT);
 ```
 
-The four arguments will, after RTL expansion, end up in the four
-register operands of the `attn` instruction in the order required by
-[§4 of `01-instruction-spec.md`](01-instruction-spec.md#4-operand-convention-and-abi):
+**Known limitation.** The four arguments passed here are the raw
+`O`, `Q`, `K`, `V` pointers the matcher found, not the
+`attn_ptrs` / `attn_dims` / `attn_cfg` block ABI that
+[§4 of `01-instruction-spec.md`](01-instruction-spec.md#4-operand-convention-and-abi)
+defines and that the explicit-builtin path in `demo/attn.h` builds.
+This path does not conform to that ABI; it is called out as a known
+limitation directly in `tree-ssa-attn.cc`'s file header. Dimensions
+and the scale factor are not passed at all.
 
 ```
-                IFN_RISCV_ATTN (O, Q, K, V)         ← GIMPLE
+        attn_match() finds O, Q, K, V         ← GIMPLE, attnrec pass
                        │
-                       │  expand_RISCV_ATTN
+                       │  riscv_builtin_decl_attn()
+                       ▼
+        call __builtin_riscv_attn(O, Q, K, V) ← GIMPLE
+                       │
+                       │  ordinary builtin expansion, no IFN
                        ▼
                 gen_riscv_attn (O, Q, K, V)         ← RTL
                        │
@@ -389,9 +420,12 @@ register operands of the `attn` instruction in the order required by
                      O   Q    K    V
 ```
 
-The lowering from GIMPLE to RTL is handled by `expand_RISCV_ATTN`,
-which is two dozen lines in `internal-fn.cc` and is shown in
-[§7.3 of `01-instruction-spec.md`](01-instruction-spec.md#73-gcc--internal-function).
+An earlier revision of this pass routed emission through a dedicated
+internal function, `IFN_RISCV_ATTN`, expanded by a hand-written
+`expand_RISCV_ATTN` in `internal-fn.cc`. That internal function has
+been deleted from the tree; see
+[§7.3 of `01-instruction-spec.md`](01-instruction-spec.md#73-gcc--internal-function-removed)
+for the historical note.
 
 ---
 
@@ -439,7 +473,7 @@ flags. The most useful invocation for debugging is:
 
 ```bash
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
-    -mattn -O2 \
+    -mattn -mattn-recognize -O2 \
     -fdump-tree-attnrec-details \
     -c sdpa_test.c -o sdpa_test.o
 cat sdpa_test.c.*attnrec*
@@ -462,8 +496,8 @@ A successful run produces output structured roughly like:
 ;;     PASS — 3 distinct load bases, 1 store base
 ;;   check 5 (trip count): PASS — number_of_latch_executions = N - 1
 ;;
-;; attnrec: emitting IFN_RISCV_ATTN (O_6(D), Q_3(D), K_4(D), V_5(D))
-;;          in preheader BB 3
+;; attnrec: replaced loop 1 with __builtin_riscv_attn
+;;   pre-ABI direct pointers: O, Q, K, V (see known limitation)
 ```
 
 A *failed* run will show which check failed and why. A common
@@ -539,8 +573,10 @@ These are all directions for improving recall in future revisions.
 To bound false-positive risk in practice, three safety nets are in
 place:
 
-1. The pass is gated by `-mattn`. A user opting in is implicitly
-   asserting "this code base is attention-heavy".
+1. The pass is gated by `-mattn-recognize`, a separate opt-in from
+   `-mattn`. A user passing it is implicitly asserting "this code
+   base is attention-heavy" and accepting the experimental risk
+   described in the known-limitation note at the top of this file.
 2. The matched call is left **alongside** the original loop body
    (§7). Even if the emit was inappropriate, the program still runs
    correctly *as long as the hardware semantics of `attn` are a

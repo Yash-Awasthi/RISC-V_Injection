@@ -8,8 +8,9 @@
 The eleven issues are roughly ordered by the layer they touch:
 build-system glitches first, then header-ordering, then
 middle-end ICEs (Internal Compiler Errors), then pass-pipeline
-mistakes, then matching-logic flaws, and finally a workaround for a
-post-fix scheduler interaction.
+mistakes, then matching-logic flaws, and finally the now-removed
+scheduler-disabling workaround that Issue 7's real fix made
+unnecessary.
 
 ---
 
@@ -23,11 +24,11 @@ post-fix scheduler interaction.
 | [4](#issue-4--mark_virtual_operands_for_renaming-not-declared) | `mark_virtual_operands_for_renaming` not declared |
 | [5](#issue-5--ice-in-scev_initialize) | ICE — calling `scev_initialize` twice |
 | [6](#issue-6--ice-in-propagate_necessity-dce) | ICE — DCE on a memory-touching IFN |
-| [7](#issue-7--ice-in-riscv_sched_variable_issue) | ICE — RISC-V scheduler asserts on `type "unknown"` |
+| [7](#issue-7--ice-in-riscv_sched_variable_issue) | ICE — RISC-V scheduler asserts on `type "unknown"`, fixed to `"ghost"` |
 | [8](#issue-8--pass-inserted-inside-graphite-block) | Pass registered but never executed |
 | [9](#issue-9--attn-fires-inside-a-loop-wrong-position) | `attn` instruction in the wrong basic block |
 | [10](#issue-10--three-separate-loop-nests-no-single-outer-loop) | Matcher rejects unfused source |
-| [11](#issue-11--fno-schedule-insns-flag-still-required) | Stale scheduler state across partial rebuilds |
+| [11](#issue-11--the-scheduler-disabling-workaround-is-gone) | Historical: the pre-`"ghost"` scheduler workaround |
 
 ---
 
@@ -302,6 +303,11 @@ are stack-prologue markers and other "do not really execute on the
 pipeline" insns. It is the correct type for an opaque coprocessor
 call whose timing model is not yet committed.
 
+That correctness has a ceiling: `"ghost"` tells the scheduler `attn`
+costs zero cycles, which is false for an O(N^2 D) attention kernel.
+It is acceptable only because no `attn` hardware and no cost model
+for it exist yet — once either does, this needs a real reservation.
+
 ---
 
 ## Issue 8 — Pass inserted inside Graphite block
@@ -470,41 +476,31 @@ three distinct external arrays, the check passes.
 
 ---
 
-## Issue 11 — `-fno-schedule-insns` flag still required
+## Issue 11 — the scheduler-disabling workaround is gone
 
-### Symptom
+### Symptom (historical)
 
-After fixing Issue 7 (`type "ghost"`) and rebuilding, the verification
-recipe still asks the user to compile with:
-
-```
--fno-schedule-insns -fno-schedule-insns2
-```
-
-Why? If the source was rebuilt, surely the scheduler is now
-satisfied.
+Before Issue 7 was fixed, `-mattn -O2` alone hit the scheduler ICE.
+The verification recipe worked around it by adding two compile
+flags that turn off both instruction-scheduling passes, so
+`riscv_sched_variable_issue` never ran on the `attn` insn.
 
 ### Root cause
 
-The fix to `riscv.md` is in the source tree, but until the *staged*
-build of GCC has both stages rebuilt with the new `riscv.md`, the
-installed compiler binary may still embed the old (asserting)
-behaviour. In partial rebuilds, the second stage of GCC sometimes
-inherits stale `insn-attrtab.cc` / `insn-recog.cc` from the first
-stage.
+Same as Issue 7: `type "unknown"` on `riscv_attn` tripped
+`gcc_assert (get_attr_type (insn) != TYPE_UNKNOWN)` in the scheduler.
+Disabling scheduling avoided the call instead of fixing the type.
 
 ### Fix and current status
 
-* In freshly-built compilers, the flags are not necessary.
-* In the documented verification recipe (§6 of
-  [`03-build-and-run.md`](03-build-and-run.md)),
-  `-fno-schedule-insns -fno-schedule-insns2` are kept as a
-  belt-and-braces measure so that the recipe also works on
-  partially-rebuilt trees.
-* If you want to confirm the flags are no longer needed on your
-  build, do a clean rebuild (`rm -rf build-gcc-newlib-stage1
-  build-gcc-newlib-stage2 stamps`) and re-run the verification
-  without the flags.
+`riscv_attn` now carries `type "ghost"` in `riscv.md`, so the
+scheduler has a real answer and never asserts. The flags have been
+removed from `demo/` and `docs/` — every build and verification
+command in this repository now runs with both scheduling passes on.
+A stale, partially rebuilt compiler that still embeds the old
+`type "unknown"` behaviour would need a clean rebuild
+(`rm -rf build-gcc-newlib-stage1 build-gcc-newlib-stage2 stamps`)
+before the flag-free commands above will work.
 
 ---
 

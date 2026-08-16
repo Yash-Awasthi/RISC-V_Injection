@@ -6,14 +6,21 @@
 > reason the change is needed, and a `grep` command to verify it is
 > in place.
 
-A modification of this scale touches **eleven files**: two in
-binutils, eight in the GCC tree, and one new file. Each section
-below is self-contained and can be read in any order, but the
-files are ordered by the layer of the toolchain they belong to.
+A modification of this scale touches **twelve files**: two in
+binutils, nine in the GCC tree — of which six live under
+`gcc/gcc/config/riscv/` — and one new file. Each section below is
+self-contained and can be read in any order, but the files are
+ordered by the layer of the toolchain they belong to.
+
+The pattern-matching pass (File 12) talks to the backend only
+through a normal target builtin, `__builtin_riscv_attn`, declared
+and expanded entirely inside `config/riscv/`. No core GCC file
+outside `config/riscv/` — `internal-fn.def`, `internal-fn.cc` — needs
+to know this instruction exists.
 
 ---
 
-## Table of contents — the eleven files
+## Table of contents — the twelve files
 
 | # | File | Layer | What changes |
 |---|------|-------|---------------|
@@ -21,13 +28,14 @@ files are ordered by the layer of the toolchain they belong to.
 | 2 | [`binutils/opcodes/riscv-opc.c`](#file-2--binutilsopcodesriscv-opcc) | encoding | opcode-table row |
 | 3 | [`gcc/gcc/config/riscv/riscv.opt`](#file-3--gccgccconfigriscvriscvopt) | flag | new `-mattn` flag |
 | 4 | [`gcc/gcc/config/riscv/riscv.md`](#file-4--gccgccconfigriscvriscvmd) | RTL | `UNSPEC_RISCV_ATTN` + `define_insn "riscv_attn"` |
-| 5 | [`gcc/gcc/internal-fn.def`](#file-5--gccgccinternal-fndef) | IR | `IFN_RISCV_ATTN` declaration |
-| 6 | [`gcc/gcc/internal-fn.cc`](#file-6--gccgccinternal-fncc) | IR | `expand_RISCV_ATTN` expander |
-| 7 | [`gcc/gcc/config/riscv/riscv.cc`](#file-7--gccgccconfigriscvriscvcc) | flag | rv32 warning in `riscv_option_override` |
-| 8 | [`gcc/gcc/passes.def`](#file-8--gccgccpassesdef) | pipeline | pass registration |
-| 9 | [`gcc/gcc/tree-pass.h`](#file-9--gccgcctree-passh) | pipeline | factory function declaration |
-| 10 | [`gcc/gcc/Makefile.in`](#file-10--gccgccmakefilein) | build | new object file in `OBJS` |
-| 11 | [`gcc/gcc/tree-ssa-attn.cc`](#file-11--gccgcctree-ssa-attncc-new-file) | pass body | **new file**, ~500 lines |
+| 5 | [`gcc/gcc/config/riscv/riscv-ftypes.def`](#file-5--gccgccconfigriscvriscv-ftypesdef) | builtin | function prototype for `__builtin_riscv_attn` |
+| 6 | [`gcc/gcc/config/riscv/riscv-builtins.cc`](#file-6--gccgccconfigriscvriscv-builtinscc) | builtin | builtin table row + decl accessor |
+| 7 | [`gcc/gcc/config/riscv/riscv-protos.h`](#file-7--gccgccconfigriscvriscv-protosh) | builtin | accessor declaration |
+| 8 | [`gcc/gcc/config/riscv/riscv.cc`](#file-8--gccgccconfigriscvriscvcc) | flag | rv32 warning in `riscv_option_override` |
+| 9 | [`gcc/gcc/passes.def`](#file-9--gccgccpassesdef) | pipeline | pass registration |
+| 10 | [`gcc/gcc/tree-pass.h`](#file-10--gccgcctree-passh) | pipeline | factory function declaration |
+| 11 | [`gcc/gcc/Makefile.in`](#file-11--gccgccmakefilein) | build | new object file in `OBJS` |
+| 12 | [`gcc/gcc/tree-ssa-attn.cc`](#file-12--gccgcctree-ssa-attncc-new-file) | pass body | **new file**, ~500 lines |
 
 All paths are relative to the root of the `riscv-gnu-toolchain`
 checkout, which in this repository is the repository root itself.
@@ -212,82 +220,104 @@ grep -n 'riscv_attn\|UNSPEC_RISCV_ATTN' gcc/gcc/config/riscv/riscv.md
 
 ---
 
-## File 5 — `gcc/gcc/internal-fn.def`
+## File 5 — `gcc/gcc/config/riscv/riscv-ftypes.def`
 
-Add (near other `DEF_INTERNAL_FN` entries, alphabetical order
-preferred):
+Append one prototype line:
 
 ```c
-DEF_INTERNAL_FN (RISCV_ATTN, ECF_NOTHROW, NULL)
+DEF_RISCV_FTYPE (4, (VOID, VOID_PTR, VOID_PTR, VOID_PTR, VOID_PTR))
 ```
 
-This declares the new internal function `IFN_RISCV_ATTN`, makes the
-`expand_RISCV_ATTN` C++ symbol available, and tells GCC the call
-properties:
-
-* **`ECF_NOTHROW`** — cannot raise C++ exceptions;
-* note the *absence* of `ECF_LEAF` — leaf functions are assumed not
-  to touch memory, which contradicts our four-pointer
-  read/write contract and triggers a DCE ICE
-  (see [`05-troubleshooting.md` Issue 6](05-troubleshooting.md#issue-6--ice-in-propagate_necessity-dce)).
-
-The third argument `NULL` says we have no fold/simplify hook for the
-function — there is no algebraic simplification that applies.
+This declares the C signature of `__builtin_riscv_attn`: a
+`void`-returning function taking the four raw `void *` operands
+(O, Q, K, V). `riscv_build_function_type` turns this line into a
+real `tree` function type the first time the prototype is used.
 
 Verify:
 
 ```bash
-grep -n 'RISCV_ATTN' gcc/gcc/internal-fn.def
+grep -n 'VOID_PTR, VOID_PTR, VOID_PTR, VOID_PTR' gcc/gcc/config/riscv/riscv-ftypes.def
 # Expected: 1 hit
 ```
 
 ---
 
-## File 6 — `gcc/gcc/internal-fn.cc`
+## File 6 — `gcc/gcc/config/riscv/riscv-builtins.cc`
 
-Add the expander near other `expand_*` definitions (a convenient
-anchor is `expand_UBSAN_NULL`):
+Three edits, all inside the existing builtin machinery.
+
+### Change A — availability predicate
+
+Next to the other `AVAIL` declarations:
 
 ```c
-static void
-expand_RISCV_ATTN (internal_fn, gcall *stmt)
+AVAIL (attn, TARGET_ATTN)
+```
+
+### Change B — the builtin table row
+
+Appended to the `riscv_builtins[]` array:
+
+```c
+DIRECT_NO_TARGET_BUILTIN (attn,
+                          RISCV_VOID_FTYPE_VOID_PTR_VOID_PTR_VOID_PTR_VOID_PTR,
+                          attn),
+```
+
+`DIRECT_NO_TARGET_BUILTIN` wires the name `__builtin_riscv_attn` to
+instruction `CODE_FOR_riscv_attn` (the `define_insn "riscv_attn"`
+from File 4). `NO_TARGET` because the instruction returns nothing —
+all four operands are inputs, matching the four-pointer contract in
+`attn_emit_replacement`. `riscv_init_builtins` only registers the
+decl when `TARGET_ATTN` is set; with `-mattn` absent, the builtin
+does not exist and the pass must not run (see File 12's gate).
+
+### Change C — decl accessor
+
+Added after `riscv_builtin_decl`:
+
+```c
+tree
+riscv_builtin_decl_attn (void)
 {
-  /* R4-type: attn rd, rs1, rs2, rs3
-       rd  = O pointer  (output array)
-       rs1 = Q pointer
-       rs2 = K pointer
-       rs3 = V pointer  */
-  rtx out = expand_normal (gimple_call_arg (stmt, 0));
-  rtx q   = expand_normal (gimple_call_arg (stmt, 1));
-  rtx k   = expand_normal (gimple_call_arg (stmt, 2));
-  rtx v   = expand_normal (gimple_call_arg (stmt, 3));
-  out = force_reg (Pmode, out);
-  q   = force_reg (Pmode, q);
-  k   = force_reg (Pmode, k);
-  v   = force_reg (Pmode, v);
-  emit_insn (gen_riscv_attn (out, q, k, v));
+  return GET_BUILTIN_DECL (CODE_FOR_riscv_attn);
 }
 ```
 
-The function dispatches the four GIMPLE call arguments to RTL,
-forces each into a Pmode register (so the RTL pattern's
-`register_operand` predicate is satisfied), and emits the RTL
-insn via the auto-generated `gen_riscv_attn` helper.
-
-The wiring `IFN_RISCV_ATTN → expand_RISCV_ATTN` is performed
-automatically by the macro machinery in `internal-fn.def` — no
-manual dispatch table is needed.
+`tree-ssa-attn.cc` (File 12) is a GIMPLE pass, not the C front end,
+so it cannot spell `__builtin_riscv_attn()` as source text. It needs
+the `FUNCTION_DECL` tree directly, and `GET_BUILTIN_DECL` — the same
+macro `riscv_atomic_assign_expand_fenv` already uses for `frflags`
+and `fsflags` — is the established way to fetch one by instruction
+code from outside the translation unit that built the table.
 
 Verify:
 
 ```bash
-grep -n 'expand_RISCV_ATTN' gcc/gcc/internal-fn.cc
-# Expected: 1 hit (the function definition)
+grep -n 'attn' gcc/gcc/config/riscv/riscv-builtins.cc
+# Expected: hits for AVAIL, the builtin row, and riscv_builtin_decl_attn
 ```
 
 ---
 
-## File 7 — `gcc/gcc/config/riscv/riscv.cc`
+## File 7 — `gcc/gcc/config/riscv/riscv-protos.h`
+
+One declaration, next to `riscv_builtin_decl`:
+
+```c
+extern tree riscv_builtin_decl_attn (void);
+```
+
+Verify:
+
+```bash
+grep -n 'riscv_builtin_decl_attn' gcc/gcc/config/riscv/riscv-protos.h
+# Expected: 1 hit
+```
+
+---
+
+## File 8 — `gcc/gcc/config/riscv/riscv.cc`
 
 Inside `riscv_option_override`, near other validation code:
 
@@ -305,7 +335,7 @@ flagging the unvalidated configuration.
 
 ---
 
-## File 8 — `gcc/gcc/passes.def`
+## File 9 — `gcc/gcc/passes.def`
 
 The Graphite block in `passes.def` has the structure:
 
@@ -334,7 +364,7 @@ grep -n 'pass_recognize_attn' gcc/gcc/passes.def
 
 ---
 
-## File 9 — `gcc/gcc/tree-pass.h`
+## File 10 — `gcc/gcc/tree-pass.h`
 
 Inserted immediately below the existing `make_pass_graphite`
 declaration:
@@ -344,8 +374,8 @@ extern gimple_opt_pass *make_pass_recognize_attn (gcc::context *ctxt);
 ```
 
 This is the factory function defined at the bottom of
-`tree-ssa-attn.cc` (File 11). `passes.def` calls it implicitly via
-the `NEXT_PASS` macro from File 8.
+`tree-ssa-attn.cc` (File 12). `passes.def` calls it implicitly via
+the `NEXT_PASS` macro from File 9.
 
 Verify:
 
@@ -356,7 +386,7 @@ grep -n 'make_pass_recognize_attn' gcc/gcc/tree-pass.h
 
 ---
 
-## File 10 — `gcc/gcc/Makefile.in`
+## File 11 — `gcc/gcc/Makefile.in`
 
 Insert below the `tree-ssa-math-opts.o \` line — chosen as the
 anchor because it appears exactly once in the file, unlike
@@ -389,10 +419,11 @@ grep -n 'tree-ssa-math-opts.o' gcc/gcc/Makefile.in
 
 ---
 
-## File 11 — `gcc/gcc/tree-ssa-attn.cc` (new file)
+## File 12 — `gcc/gcc/tree-ssa-attn.cc` (new file)
 
 This is the only **new** file in the modification. It implements the
-`attnrec` pass — the pattern matcher and the IFN emitter. Roughly
+`attnrec` pass — the pattern matcher and the emitter that replaces a
+recognized loop nest with a call to `__builtin_riscv_attn`. Roughly
 500 lines.
 
 > **Common mistake.** The file's home is `gcc/gcc/tree-ssa-attn.cc`
@@ -420,12 +451,12 @@ The file's required headers, in the order GCC expects them:
 #include "tree-cfg.h"
 #include "tree-ssa-loop.h"
 #include "tree-scalar-evolution.h"
-#include "internal-fn.h"
 #include "tree-data-ref.h"
 #include "tree-eh.h"
 #include "tree-ssa.h"
 #include "tree-into-ssa.h"        /* mark_virtual_operands_for_renaming */
 #include "builtins.h"
+#include "config/riscv/riscv-protos.h" /* riscv_builtin_decl_attn */
 ```
 
 Two header-ordering rules are non-obvious and were learnt by build
@@ -448,6 +479,15 @@ that class. The pass uses a direct loop count instead — the SCC
 check from the original methodology was replaced with a count of
 loops carrying madd reductions.
 
+`attn_emit_replacement` no longer builds an internal-fn call. It
+fetches the `FUNCTION_DECL` for `__builtin_riscv_attn` from File 6's
+`riscv_builtin_decl_attn ()` and passes it straight to
+`gimple_build_call`, the same way any other GIMPLE pass calls a
+known builtin. Because the builtin decl only exists when `-mattn`
+registered it, the pass gate checks `TARGET_ATTN` in addition to
+`TARGET_ATTN_RECOGNIZE` — recognizing the idiom without the
+instruction to replace it with would call a stale or wrong decl.
+
 The full source is the single best reference for the pass body and
 should be read alongside [`02-compiler-pass.md`](02-compiler-pass.md).
 
@@ -456,7 +496,7 @@ should be read alongside [`02-compiler-pass.md`](02-compiler-pass.md).
 ## Cross-reference table
 
 If you want to know "which file fixes problem X", this table maps
-the eleven files to the specific design problems they solve.
+the twelve files to the specific design problems they solve.
 
 | design problem | file(s) |
 |----------------|---------|
@@ -464,13 +504,14 @@ the eleven files to the specific design problems they solve.
 | `objdump` must disassemble `attn` | 1 (uses same MATCH/MASK) |
 | `-mattn` must be a real flag | 3 |
 | GCC must know how to *print* the assembly | 4 |
-| GIMPLE must have a stable place to put the abstract operation | 5 |
-| The abstract IFN must lower to RTL | 6 |
-| Users on rv32 must see a warning | 7 |
-| The pattern-matching pass must run at the right place | 8 |
-| The pass factory must be visible to `passes.def` | 9 |
-| `make` must compile the new pass | 10 |
-| The pattern matching itself | 11 |
+| `__builtin_riscv_attn` must have a C-callable prototype | 5 |
+| The builtin must be registered and lower to RTL | 6 |
+| The pass must be able to fetch the builtin decl | 7 |
+| Users on rv32 must see a warning | 8 |
+| The pattern-matching pass must run at the right place | 9 |
+| The pass factory must be visible to `passes.def` | 10 |
+| `make` must compile the new pass | 11 |
+| The pattern matching itself, and calling the builtin | 12 |
 
 This is essentially the "responsibilities matrix" for the project.
 

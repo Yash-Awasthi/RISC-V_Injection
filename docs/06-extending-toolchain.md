@@ -288,14 +288,57 @@ You now have two ways to expose `myinsn` to user code:
 
 ### 7a. Intrinsic / builtin (the easy way)
 
-Register a `DIRECT_BUILTIN` in `riscv-builtins.cc`. The user writes:
+Register a `DIRECT_BUILTIN` (for an instruction that produces a
+result) or a `DIRECT_NO_TARGET_BUILTIN` (for one that returns
+nothing, e.g. a pure memory-effect instruction) in
+`riscv-builtins.cc`. Three pieces, all in existing files:
+
+1. An availability predicate, gating the builtin on your `-m` flag:
+
+   ```c
+   AVAIL (myinsn, TARGET_MYINSN)
+   ```
+
+2. A prototype row in `riscv-ftypes.def`, one `RISCV_ATYPE_*` per
+   argument plus the return type first:
+
+   ```c
+   DEF_RISCV_FTYPE (3, (VOID, VOID_PTR, VOID_PTR, VOID_PTR))
+   ```
+
+3. A row in the `riscv_builtins[]` table in `riscv-builtins.cc`:
+
+   ```c
+   DIRECT_NO_TARGET_BUILTIN (myinsn,
+			     RISCV_VOID_FTYPE_VOID_PTR_VOID_PTR_VOID_PTR,
+			     myinsn),
+   ```
+
+`DIRECT_NO_TARGET_BUILTIN (INSN, ...)` maps the builtin straight onto
+`CODE_FOR_riscv_INSN` — the `define_insn` you already added in step
+5 — via the target-independent expansion code in
+`riscv_expand_builtin_direct`. No new RTL and no hand-written
+expander are needed: if an operand's predicate rejects the argument
+as given (for instance `register_operand` seeing a value that is not
+yet in a register), GCC's generic `maybe_legitimize_operand` forces
+it into one automatically.
+
+The user writes:
 
 ```c
 __builtin_riscv_myinsn(a, b, c);
 ```
 
-and the compiler emits one machine instruction. Quick to implement;
-makes the source code non-portable.
+and the compiler emits one machine instruction, gated on the same
+`-m` flag as the pattern itself — calling the builtin without the
+flag is a compile-time error. This path is a straight 1:1 mapping
+onto the encoding, with no semantics invented by the compiler beyond
+"put these arguments where the pattern expects them and emit the
+instruction"; it is quick to implement but makes the source code
+non-portable. The `attn` instruction in this project ships exactly
+this builtin — see
+[§7.5 of `01-instruction-spec.md`](01-instruction-spec.md#75-gcc--explicit-builtin)
+for the concrete, worked example.
 
 ### 7b. Idiom recognition (the project's choice)
 

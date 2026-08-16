@@ -25,7 +25,8 @@ R4-type, 32 bits, opcode-slot `custom-0`. Specified in detail in
 [`01-instruction-spec.md`](01-instruction-spec.md).
 
 **`attnrec`.** The name of the GIMPLE pass that recognises SDPA and
-emits `IFN_RISCV_ATTN`. Lives in `gcc/gcc/tree-ssa-attn.cc`.
+calls `__builtin_riscv_attn`. Experimental, off by default
+(`-mattn-recognize`). Lives in `gcc/gcc/tree-ssa-attn.cc`.
 See [`02-compiler-pass.md`](02-compiler-pass.md).
 
 **Attention (in deep learning).** The operation
@@ -70,8 +71,9 @@ toolchain produced by this project is a cross-compiler:
 
 **DCE (Dead-Code Elimination).** The GCC optimisation that removes
 statements whose results are not used. Without precautions, DCE
-will eliminate an `IFN_RISCV_ATTN` call whose return value is
-unused. The pass marks the call **volatile** to prevent this
+will eliminate a call to `__builtin_riscv_attn` (or, in an earlier
+revision, to `IFN_RISCV_ATTN`) whose return value is unused. The
+pass marks the call **volatile** to prevent this
 (see [Issue 6](05-troubleshooting.md#issue-6--ice-in-propagate_necessity-dce)).
 
 **DECLARE_INSN.** A binutils macro that registers an instruction in
@@ -94,15 +96,20 @@ Pmode is `DI` on RV64 and `SI` on RV32. Used in `riscv.md`.
 ## E
 
 **`-mattn`.** The compiler flag added by this project. Defines the
-preprocessor macro `TARGET_ATTN`. Gates the `attnrec` pass and the
-`define_insn`'s predicate. See
+preprocessor macro `TARGET_ATTN`. Gates the `attn` instruction, the
+`__builtin_riscv_attn` builtin, and the `define_insn`'s predicate. A
+separate flag, `-mattn-recognize` (`TARGET_ATTN_RECOGNIZE`), gates
+the `attnrec` idiom-recognition pass on top of `-mattn`; the pass's
+gate requires both. See
 [§8 of `01-instruction-spec.md`](01-instruction-spec.md#8-the--mattn-compile-time-flag).
 
 **ECF_LEAF / ECF_NOTHROW.** GCC call-property flags. `ECF_LEAF`
 asserts the call does not access caller's memory. `ECF_NOTHROW`
-asserts it cannot raise a C++ exception. The IFN declaration uses
-`ECF_NOTHROW` only — `ECF_LEAF` would conflict with the volatile
-flag and trigger a DCE ICE.
+asserts it cannot raise a C++ exception. An earlier revision's
+`IFN_RISCV_ATTN` internal-function declaration used `ECF_NOTHROW`
+only — `ECF_LEAF` would have conflicted with the volatile flag and
+triggered a DCE ICE. That internal function has since been removed
+in favour of a direct call to `__builtin_riscv_attn`.
 
 **ELF (Executable and Linkable Format).** The standard binary
 format on Linux and on most bare-metal RISC-V boards. The output
@@ -137,11 +144,12 @@ opcode table populated in File 2 of
 modifies. Version 15.2.0.
 
 **`gcall`.** GCC's GIMPLE call statement. The pass builds one of
-these for `IFN_RISCV_ATTN`.
+these for the direct call to `__builtin_riscv_attn`.
 
 **Gate (of a pass).** The boolean predicate, on a `gimple_opt_pass`,
 that decides whether the pass runs at all on a given function. The
-`attnrec` gate requires `TARGET_ATTN`, optimisation ≥ 2, and loop
+`attnrec` gate requires `TARGET_ATTN` **and** `TARGET_ATTN_RECOGNIZE`
+(so `-mattn` alone is not enough), optimisation ≥ 2, and loop
 optimisation enabled.
 
 **GIMPLE.** GCC's machine-independent intermediate representation
@@ -168,7 +176,10 @@ GIMPLE, and RTL.
 **IFN (Internal Function).** A GCC mechanism for declaring an
 abstract operation that has a fixed expansion to RTL but no
 language-level form. Declared in `internal-fn.def`, expanded in
-`internal-fn.cc`. The pass emits `IFN_RISCV_ATTN`.
+`internal-fn.cc`. An earlier revision of this project declared
+`IFN_RISCV_ATTN`; it has since been removed in favour of a direct
+call to `__builtin_riscv_attn`, so the pass no longer uses an IFN
+at all.
 
 **ICE (Internal Compiler Error).** GCC's term for "the compiler
 itself crashed". An ICE is always a bug in the compiler, never
@@ -229,12 +240,12 @@ the IR and either analyses or transforms it. GCC has hundreds of
 GIMPLE passes; `attnrec` is one of them.
 
 **Pmode.** The "pointer mode" — the RTL mode of a pointer-sized
-register. `DImode` on RV64, `SImode` on RV32. Used by the IFN
-expander to materialise its arguments.
+register. `DImode` on RV64, `SImode` on RV32. Used to materialise
+the builtin call's pointer arguments during RTL expansion.
 
 **Preheader.** The unique basic block immediately before the
-header of a loop. The pass inserts the `IFN_RISCV_ATTN` call into
-the preheader of the matched outer loop.
+header of a loop. The pass inserts the `__builtin_riscv_attn` call
+into the preheader of the matched outer loop.
 
 ## Q
 
@@ -324,8 +335,8 @@ project declares `UNSPEC_RISCV_ATTN` and uses it in the
 
 **Volatile (GIMPLE).** A flag set by `gimple_set_has_volatile_ops`
 that tells GCC the statement has arbitrary observable side
-effects. Set on the `IFN_RISCV_ATTN` call to keep DCE from
-eliminating it.
+effects. Set on the `__builtin_riscv_attn` call the pass inserts,
+to keep DCE from eliminating it.
 
 ## X
 

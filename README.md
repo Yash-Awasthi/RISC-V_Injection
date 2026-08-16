@@ -19,11 +19,15 @@
 
 # `attn` — A Custom RISC-V Instruction for Transformer Attention
 
-> A modified `riscv-gnu-toolchain` that teaches GCC to recognise the
-> scaled dot-product attention (SDPA) pattern in ordinary C code and
-> lower it to a single hardware instruction — **without inline
-> assembly, without `__builtin_*` intrinsics, and without `.insn`
-> directives**.
+> A modified `riscv-gnu-toolchain` that adds a custom `attn` machine
+> instruction and exposes it two ways: an explicit
+> `__builtin_riscv_attn` builtin (the primary, non-experimental
+> path — no inline assembly, no `.insn` directives), and an
+> experimental, off-by-default GIMPLE pass that tries to recognise
+> the scaled dot-product attention (SDPA) pattern in ordinary,
+> unmodified C code and rewrite it to the same instruction. The
+> instruction itself has never executed anywhere — there is no
+> simulator or hardware model for it (see the status table below).
 
 ---
 
@@ -79,7 +83,7 @@ $HOME/riscv-install/bin/riscv64-unknown-elf-objdump -d /tmp/t.o | grep attn
 
 ```bash
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
-    -mattn -O2 \
+    -mattn -mattn-recognize -O2 \
     -fno-schedule-insns -fno-schedule-insns2 \
     -S demo/sdpa_test.c -o /tmp/sdpa_test.s
 grep -n '\battn\b' /tmp/sdpa_test.s
@@ -124,12 +128,12 @@ See [`scripts/README.md`](scripts/README.md) for the full surface.
 | Format | R4-type (4 register operands, like `fmadd`) |
 | Opcode slot | `custom-0` (`opcode[6:0] = 0x0b`) |
 | MATCH / MASK | `0x0000000b` / `0x0600707f` |
-| Compiler flag | `-mattn` |
+| Compiler flag | `-mattn` (instruction + `__builtin_riscv_attn`, primary path), `-mattn-recognize` (experimental idiom recognizer, off by default) |
 | GCC version | 15.2.0 (riscv-gnu-toolchain fork) |
 | Binutils version | 2.46 |
-| Pass position | #179 in the GIMPLE pipeline (after Graphite) |
-| Internal function | `IFN_RISCV_ATTN` |
-| Status | Toolchain-side complete; hardware/simulator semantics are future work |
+| Pass position | `attnrec` idiom recognizer: #179 in the GIMPLE pipeline (after Graphite) |
+| Builtin | `__builtin_riscv_attn(rd, rs1, rs2, rs3)`, maps 1:1 onto the `attn` RTL pattern — no internal function involved |
+| Status | Encoding, builtin, and recognizer are toolchain-side complete; the instruction has never executed on hardware or a simulator; the recognizer is experimental and known-unsound (see status table below) |
 
 The instruction is the compiler-visible counterpart of the operation
 implemented by every Transformer self-attention block:
@@ -190,20 +194,42 @@ On top of the upstream sources, it adds:
    `gcc/gcc/tree-ssa-attn.cc`, ~500 lines) that walks every loop nest
    in the function being compiled and decides whether it implements
    SDPA.
-2. **A new GCC internal function** `IFN_RISCV_ATTN` and its expander
-   (`gcc/gcc/internal-fn.def`, `gcc/gcc/internal-fn.cc`).
+2. **An explicit GCC builtin**, `__builtin_riscv_attn`
+   (`gcc/gcc/config/riscv/riscv-builtins.cc`,
+   `gcc/gcc/config/riscv/riscv-ftypes.def`), that maps its four
+   `void *` arguments straight onto the RTL pattern below — no
+   internal function, no hand-written expander. Used directly by
+   [`demo/attn.h`](demo/attn.h) and [`demo/sdpa_builtin.c`](demo/sdpa_builtin.c).
+   An earlier revision routed this through a dedicated internal
+   function, `IFN_RISCV_ATTN`; that internal function has since been
+   deleted from the tree in favour of the direct builtin call.
 3. **A new RTL pattern** (`define_insn "riscv_attn"` in
    `gcc/gcc/config/riscv/riscv.md`) that emits the assembly mnemonic.
-4. **A new compiler flag** `-mattn` (`gcc/gcc/config/riscv/riscv.opt`).
+4. **Two new compiler flags** (`gcc/gcc/config/riscv/riscv.opt`):
+   `-mattn` makes the `attn` instruction and the builtin available —
+   this is the primary, non-experimental path; `-mattn-recognize`
+   separately enables the experimental idiom recognizer described
+   above, and is off by default.
 5. **A new binutils opcode table entry** so that GAS can encode `attn`
    and `objdump` can disassemble it
    (`binutils/include/opcode/riscv-opc.h`,
    `binutils/opcodes/riscv-opc.c`).
 
-The deliberate constraint of the project is that **the user's C code
-is unchanged**. There is no header to include, no intrinsic to call,
-no inline-asm block to write. The detection happens automatically as
-part of normal `-O2` compilation, gated only by `-mattn`.
+Two entry points exist side by side. The **explicit builtin**
+(`__builtin_riscv_attn`, via [`demo/attn.h`](demo/attn.h)) requires
+the programmer to state the operation, in exchange for no
+pattern-matching risk — this is the recommended path. The
+**idiom recognizer** (`attnrec`) instead leaves the user's C code
+unchanged — no header, no intrinsic call, no inline-asm block — and
+tries to detect SDPA automatically during normal `-O2` compilation.
+It is gated by the separate, off-by-default `-mattn-recognize` flag
+precisely because that automatic detection is experimental and known
+to be unsound in at least one documented case — see the
+known-limitation note in
+[`docs/02-compiler-pass.md`](docs/02-compiler-pass.md) and the
+known-false-positive case in
+[`demo/failures/README.md`](demo/failures/README.md#known-false-positive-fail_scattered-signature-known-false-positivec)
+before enabling it on real code.
 
 ---
 
@@ -265,7 +291,7 @@ with the modified toolchain:
 
 ```bash
 $HOME/riscv-install/bin/riscv64-unknown-elf-gcc \
-    -mattn -O2 \
+    -mattn -mattn-recognize -O2 \
     -fno-schedule-insns -fno-schedule-insns2 \
     -S demo/sdpa_test.c -o /tmp/sdpa_test.s
 ```
@@ -290,18 +316,27 @@ for why this is the correct behaviour and how to take the next step.
 | Layer | Status | Where it lives |
 |-------|--------|----------------|
 | Toolchain-side encoding (assembler / disassembler) | Complete | this repo |
-| Compiler pattern matching (`attnrec` pass) | Complete | this repo |
-| RTL / IR plumbing (IFN, define_insn, expander) | Complete | this repo |
+| Explicit builtin (`__builtin_riscv_attn`, primary path) | Complete; ABI (`attn_ptrs`/`attn_dims`/`attn_cfg`) matches [`docs/01-instruction-spec.md` §4](docs/01-instruction-spec.md#4-operand-convention-and-abi) | this repo, see [`demo/attn.h`](demo/attn.h) |
+| Compiler pattern matching (`attnrec` pass) | Experimental, off by default (`-mattn-recognize`). **Known unsound**, not just incomplete: [`demo/failures/fail_scattered-signature-known-false-positive.c`](demo/failures/fail_scattered-signature-known-false-positive.c) is a documented, currently-unfixed case where the matcher accepts non-attention code. It also does not build the block ABI above — it emits the pre-ABI raw O/Q/K/V pointer form, a known limitation stated in the pass's own source. Do not enable on real code; see `plan.md` item 1. | this repo |
+| RTL / IR plumbing (`define_insn`, builtin expansion) | Complete | this repo |
 | Generic pipeline for *new* custom instructions | Complete | `scripts/` |
-| Hardware semantics in a simulator (Spike) | **Not done** — Phase 4 | future work |
+| Semantics: executable Python model, no RTL | Complete | [`tools/attn_model.py`](tools/attn_model.py) |
+| **Instruction executed anywhere** (simulator or hardware) | **Never executed. No Spike/QEMU model and no hardware exist for `attn`** — Phase 4, not started | future work |
 | Synthesisable RTL (Verilog/Chisel) for an accelerator | Out of scope | future work |
-| Equivalence proof / verified loop deletion | Out of scope | future work |
+| Equivalence proof / verified loop deletion | Out of scope — blocked on the row above | future work |
 
-The contribution of this project is therefore precisely the
-**software-side custom-instruction infrastructure**, demonstrated end
-to end on a non-trivial computation. The hardware accelerator is the
-natural next step in a hardware/software co-design pipeline; see
-[§5 of `docs/07-research-context.md`](docs/07-research-context.md#5-future-work).
+Because the instruction has never executed, nothing in this repo has
+measured whether `attn` is correct, let alone whether it is faster
+than the loop it replaces — the compiled output always contains
+*both* the `attn` call and the original loop body (see below), and
+the loop body is what actually runs today, on every path, including
+the primary builtin one. The contribution of this project is
+therefore precisely the **software-side custom-instruction
+infrastructure**, demonstrated end to end on a non-trivial
+computation, not a working accelerator. The hardware accelerator is
+the natural next step in a hardware/software co-design pipeline; see
+[§5 of `docs/07-research-context.md`](docs/07-research-context.md#5-future-work)
+and `plan.md`.
 
 ---
 

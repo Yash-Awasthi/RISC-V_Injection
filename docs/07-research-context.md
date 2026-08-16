@@ -164,23 +164,32 @@ differences makes the trajectory of design decisions clear.
 | Format | **R-type** (3 register operands) | **R4-type** (4 register operands) |
 | Operand mechanism | Two stack-allocated descriptor structs (`dims`, `qkv`) passed through `rs1`, `rs2` | Four direct pointers in `rd, rs1, rs2, rs3` |
 | MATCH / MASK | `0x0200000b` / `0xfe00707f` | `0x0000000b` / `0x0600707f` |
-| Programmer interface | Builtin `__builtin_riscv_attn(dims, qkv)` *and* automatic detection | Automatic detection only — **no builtin, no inline asm, no `.insn`** |
-| Emission mechanism | The pass synthesised `volatile asm` with `.insn r 0x0b, 0, 0x01, x0, %0, %1` and a `"memory"` clobber | The pass emits `IFN_RISCV_ATTN`; the IFN expander emits `gen_riscv_attn`; the `define_insn` prints the assembly |
+| Programmer interface | Builtin `__builtin_riscv_attn(dims, qkv)` *and* automatic detection | Builtin `__builtin_riscv_attn(o, rs1, rs2, rs3)` (primary, non-experimental path, see `demo/attn.h`) *and* automatic detection (`-mattn-recognize`, experimental, off by default) — no inline asm, no `.insn` in either path |
+| Emission mechanism | The pass synthesised `volatile asm` with `.insn r 0x0b, 0, 0x01, x0, %0, %1` and a `"memory"` clobber | The builtin call maps directly onto the `define_insn` via ordinary builtin expansion — no internal function, no hand-written expander. (An earlier revision of this project routed the recognizer through `IFN_RISCV_ATTN`; that internal function has since been removed in favour of this direct builtin call.) |
 | Pass position | After the "loop" pass | After Graphite's `POP_INSERT_PASSES()` (position 179) |
 | Loop fusion requirement | Required all four phases as separate top-level loops | Requires fused source (one outer `i`-loop) and scans whole function for load bases |
 | Loop-body removal | Pass redirected control flow past all four loops via `split_edge` + `redirect_edge_and_branch` | Pass leaves the body intact; deletion is deferred to Phase 4 (post-equivalence) |
 | Matcher condition count | 4-stage window, each phase had its own detector | 5 unified conjunctive checks |
 
-The current design is strictly cleaner: it removes the inline-assembly
-escape hatch (the project's original task explicitly forbade it), it
-removes the descriptor-struct overhead, it integrates with GCC's
-*proper* lowering pipeline (IFN → RTL → assembly via `define_insn`,
-exactly like a standard ISA instruction), and it keeps the user's
-loop body intact pending the equivalence proof that a future Phase 4
-will provide. The cost is that the matcher is more cautious, and
-some perfectly valid hand-written attention loops (e.g. the
-unfused four-loop style) are not matched without source-side
-adaptation.
+The current design removes the inline-assembly escape hatch (the
+project's original task explicitly forbade it) and integrates with
+GCC's ordinary builtin-expansion pipeline (builtin call → RTL →
+assembly via `define_insn`, exactly like a standard ISA instruction,
+with no internal function in between), and it keeps the user's loop
+body intact pending the equivalence proof that a future Phase 4 will
+provide. It also brings back an explicit builtin — dropped from the
+"automatic detection only" framing this section originally described
+— now with a documented block-ABI (`attn_ptrs`/`attn_dims`/`attn_cfg`,
+[§4 of `01-instruction-spec.md`](01-instruction-spec.md#4-operand-convention-and-abi))
+instead of the earlier prototype's two descriptor structs, and gated
+as the primary, non-experimental path while automatic recognition is
+now the opt-in, experimental one. The cost is that the matcher is
+more cautious, and some perfectly valid hand-written attention loops
+(e.g. the unfused four-loop style) are not matched without
+source-side adaptation — and, independent of recall, the matcher's
+soundness is not proven: see the known false positive documented in
+[`../demo/failures/README.md`](../demo/failures/README.md#known-false-positive-fail_scattered-signature-known-false-positivec)
+and `plan.md`.
 
 ---
 
