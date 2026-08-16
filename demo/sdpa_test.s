@@ -3,7 +3,6 @@
         # Source  : sdpa_test.c
         # Compiler: riscv64-unknown-elf-gcc (GCC 15.2.0, modified)
         # Command : riscv64-unknown-elf-gcc -mattn -O2
-        #               -fno-schedule-insns -fno-schedule-insns2
         #               -S sdpa_test.c -o sdpa_test.s
         #
         # KEY RESULT:

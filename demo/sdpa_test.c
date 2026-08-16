@@ -8,7 +8,6 @@
  * Compile command:
  *   riscv64-unknown-elf-gcc \
  *       -mattn -O2 \
- *       -fno-schedule-insns -fno-schedule-insns2 \
  *       -S sdpa_test.c -o sdpa_test.s
  *
  * ─────────────────────────────────────────────────────────────────
@@ -33,11 +32,9 @@
  * MATCH   : 0x0000000b
  * MASK    : 0x0600707f
  *
- * Operands:
- *   rd  = pointer to O  (output matrix, written by hardware)
- *   rs1 = pointer to Q  (query  matrix)
- *   rs2 = pointer to K  (key    matrix)
- *   rs3 = pointer to V  (value  matrix)
+ * Operands: see docs/01-instruction-spec.md section 4 for the
+ * rd/rs1/rs2/rs3 block-pointer ABI (this is the single normative
+ * definition; it is not repeated here).
  *
  * Binary example — attn a3, a0, a1, a2:
  *   0x60b5068b

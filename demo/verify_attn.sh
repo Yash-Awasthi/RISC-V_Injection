@@ -5,20 +5,39 @@
 # Author  : Yash Awasthi
 # Compiler: riscv64-unknown-elf-gcc (GCC 15.2.0, modified)
 #
+# Two independent surfaces are gated by two separate flags:
+#   -mattn              makes the `attn` instruction and the explicit
+#                        __builtin_riscv_attn() builtin available.
+#                        This is the primary, non-experimental path.
+#   -mattn -mattn-recognize
+#                        additionally turns on the attnrec idiom
+#                        recognizer, which tries to spot SDPA written
+#                        as plain loops and rewrite it to `attn` with
+#                        no source change. Experimental, off by
+#                        default even when -mattn is given alone.
+#
 # Runs all verification checks and prints a summary.
-# Run from ~/riscv-gnu-toolchain or anywhere with GCC in PATH.
+# Run from the repository root, or from demo/ with a bare filename.
 #
 # Usage:
 #   chmod +x verify_attn.sh
-#   ./verify_attn.sh sdpa_test.c
+#   ./verify_attn.sh demo/sdpa_builtin.c      # from repo root
+#   ./verify_attn.sh sdpa_builtin.c           # from demo/
 # ================================================================
 
 GCC="$HOME/riscv-install/bin/riscv64-unknown-elf-gcc"
 AS="$HOME/riscv-install/bin/riscv64-unknown-elf-as"
 OBJDUMP="$HOME/riscv-install/bin/riscv64-unknown-elf-objdump"
-SRC="${1:-sdpa_test.c}"
+SRC="${1:-sdpa_builtin.c}"
 PASS=0
 FAIL=0
+
+# Fixed reference files for the contract checks (5, 6, 9) below — these
+# always test the same two known-good sources regardless of $SRC, the
+# same way the original negative test always used its own axpy source.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SDPA_BUILTIN="$SCRIPT_DIR/sdpa_builtin.c"
+SDPA_TEST="$SCRIPT_DIR/sdpa_test.c"
 
 header() { echo ""; echo "════════════════════════════════════════════════════"; echo "  $1"; echo "════════════════════════════════════════════════════"; }
 ok()     { echo "  [PASS] $1"; PASS=$((PASS+1)); }
@@ -37,7 +56,7 @@ if [ -f "$SRC" ]; then
     ok "Found $SRC ($(wc -l < $SRC) lines)"
 else
     fail "Source file $SRC not found"
-    echo "  Usage: $0 sdpa_test.c"
+    echo "  Usage: $0 sdpa_builtin.c"
     exit 1
 fi
 
@@ -72,37 +91,40 @@ else
     fail "Assembly failed — check riscv-opc.h and riscv-opc.c"
 fi
 
-# ── Check 5: Pass runs on loop-containing function ───────────────
-header "5. PASS FIRES ON LOOP NEST"
-rm -f /tmp/attn_loop_test.c.*attnrec*
-cat > /tmp/attn_loop_test.c << 'EOF'
-void dummy(float *a, float *b, float *c, int n) {
-    for (int i = 0; i < n; i++)
-        for (int j = 0; j < n; j++)
-            c[i] += a[i] * b[j];
-}
-EOF
-$GCC -mattn -O2 -fdump-tree-all -c /tmp/attn_loop_test.c \
-    -o /tmp/attn_loop_test.o 2>/dev/null
-ls /tmp/attn_loop_test.c.*attnrec* 2>/dev/null | grep -q attnrec \
-    && ok "attnrec dump file created — pass is running" \
-    || fail "No attnrec dump — pass not registered correctly"
+# ── Check 5: Builtin emits attn (primary path) ───────────────────
+header "5. BUILTIN EMITS attn — PRIMARY PATH"
+if [ -f "$SDPA_BUILTIN" ]; then
+    $GCC -mattn -O2 -S "$SDPA_BUILTIN" -o /tmp/sdpa_builtin_test.s 2>/dev/null
+    if grep -q '\battn\b' /tmp/sdpa_builtin_test.s 2>/dev/null; then
+        ok "__builtin_riscv_attn emits attn under plain -mattn"
+    else
+        fail "builtin call did not produce attn — check AVAIL(attn, TARGET_ATTN) in riscv-builtins.cc and riscv.md"
+    fi
+else
+    fail "reference file not found: $SDPA_BUILTIN"
+fi
 
-# ── Check 6: Gate blocks without -mattn ──────────────────────────
-header "6. GATE — NO attn WITHOUT -mattn"
-rm -f /tmp/attn_gate_test.c.*attnrec*
-$GCC -O2 -fdump-tree-all -c /tmp/attn_loop_test.c \
-    -o /tmp/attn_gate_test.o 2>/dev/null
-ls /tmp/attn_loop_test.c.*attnrec* 2>/dev/null | grep -q attnrec \
-    && fail "Gate broken — pass fires without -mattn" \
-    || ok "Gate correct — pass suppressed without -mattn"
+# ── Check 6: Builtin without -mattn is a compile error ───────────
+header "6. BUILTIN WITHOUT -mattn ERRORS"
+if [ -f "$SDPA_BUILTIN" ]; then
+    $GCC -O2 -S "$SDPA_BUILTIN" -o /tmp/sdpa_builtin_nomattn.s \
+        2>/tmp/sdpa_builtin_nomattn.err
+    RC=$?
+    if [ $RC -ne 0 ] && grep -qi 'attn' /tmp/sdpa_builtin_nomattn.err; then
+        ok "compile fails without -mattn (exit $RC) — builtin correctly ungated"
+        echo "  $(grep -i 'attn' /tmp/sdpa_builtin_nomattn.err | head -1)"
+    else
+        fail "builtin call did not error without -mattn — AVAIL(attn, TARGET_ATTN) gate is broken"
+    fi
+else
+    fail "reference file not found: $SDPA_BUILTIN"
+fi
 
-# ── Check 7: attn instruction in sdpa_test.s ─────────────────────
-header "7. CUSTOM INSTRUCTION IN ASSEMBLY OUTPUT"
-$GCC -mattn -O2 \
-    -fno-schedule-insns -fno-schedule-insns2 \
+# ── Check 7: attn instruction from the recognizer, both flags ────
+header "7. CUSTOM INSTRUCTION IN ASSEMBLY OUTPUT — RECOGNIZER"
+$GCC -mattn -mattn-recognize -O2 \
     -fdump-tree-attnrec-details \
-    -S "$SRC" -o /tmp/sdpa_test_out.s 2>/dev/null
+    -S "$SDPA_TEST" -o /tmp/sdpa_test_out.s 2>/dev/null
 
 if grep -q '\battn\b' /tmp/sdpa_test_out.s 2>/dev/null; then
     ok "attn instruction found in assembly"
@@ -118,51 +140,54 @@ fi
 
 # ── Check 8: GIMPLE dump confirms replacement ─────────────────────
 header "8. GIMPLE DUMP — attnrec PASS INTERNALS"
-DUMP=$(ls /tmp/sdpa_test.c.*attnrec* 2>/dev/null | head -1)
-if [ -z "$DUMP" ]; then
-    # try with the output file path
-    DUMP=$(ls /tmp/sdpa_test_out.s 2>/dev/null | head -1)
-    DUMP=$(ls $SRC.*attnrec* 2>/dev/null | head -1)
-fi
-DUMP2=$(ls /tmp/*.attnrec* 2>/dev/null | head -1)
-[ -z "$DUMP" ] && DUMP="$DUMP2"
+DUMP=$(ls ./sdpa_test.c.*attnrec* 2>/dev/null | head -1)
+[ -z "$DUMP" ] && DUMP=$(ls "$SCRIPT_DIR"/sdpa_test.c.*attnrec* 2>/dev/null | head -1)
+[ -z "$DUMP" ] && DUMP=$(ls /tmp/sdpa_test.c.*attnrec* 2>/dev/null | head -1)
+[ -z "$DUMP" ] && DUMP=$(ls /tmp/*.attnrec* 2>/dev/null | head -1)
 
 if [ -n "$DUMP" ] && [ -f "$DUMP" ]; then
     ok "attnrec dump file found: $DUMP"
     echo ""
     cat "$DUMP" | grep -E 'replaced loop|rejected|bases found|RISCV_ATTN' | head -20
 else
-    echo "  [INFO] Dump at: $(ls *.c.*attnrec* 2>/dev/null | head -1)"
-    echo "  Re-run: $GCC -mattn -O2 -fdump-tree-attnrec-details -c $SRC"
+    echo "  [INFO] No dump file found next to the source or in /tmp."
+    echo "  GCC writes -fdump-tree dumps into the current directory by"
+    echo "  default; re-run from demo/ or pass -fdump-dir=/tmp/ explicitly:"
+    echo "  $GCC -mattn -mattn-recognize -O2 -fdump-tree-attnrec-details -c $SDPA_TEST"
 fi
 
-# ── Check 9: Negative test — axpy must NOT emit attn ─────────────
-header "9. NEGATIVE TEST — plain loop must NOT emit attn"
-cat > /tmp/axpy_test.c << 'EOF'
-void axpy(int n, float a, float *x, float *y) {
-    for (int i = 0; i < n; i++) y[i] = a * x[i] + y[i];
-}
-EOF
-$GCC -mattn -O2 \
-    -fno-schedule-insns -fno-schedule-insns2 \
-    -S /tmp/axpy_test.c -o /tmp/axpy_test.s 2>/dev/null
-COUNT=$(grep -c '\battn\b' /tmp/axpy_test.s 2>/dev/null || echo 0)
-[ "$COUNT" -eq 0 ] \
-    && ok "Gate correct — attn not emitted for plain axpy loop" \
-    || fail "False positive — attn emitted for non-attention code"
+# ── Check 9: -mattn alone must NOT transform a loop;              ─
+# ──          -mattn -mattn-recognize must.                       ─
+header "9. GATE — -mattn ALONE MUST NOT RECOGNIZE; -mattn -mattn-recognize MUST"
+if [ -f "$SDPA_TEST" ]; then
+    $GCC -mattn -O2 -S "$SDPA_TEST" -o /tmp/sdpa_test_mattn_only.s 2>/dev/null
+    COUNT_ONLY=$(grep -c '\battn\b' /tmp/sdpa_test_mattn_only.s 2>/dev/null || echo 0)
+    [ "$COUNT_ONLY" -eq 0 ] \
+        && ok "-mattn alone: attnrec did not fire on sdpa_test.c (0 attn emitted)" \
+        || fail "-mattn alone transformed a loop — TARGET_ATTN_RECOGNIZE gate is broken"
+
+    $GCC -mattn -mattn-recognize -O2 -S "$SDPA_TEST" \
+        -o /tmp/sdpa_test_recognize.s 2>/dev/null
+    COUNT_BOTH=$(grep -c '\battn\b' /tmp/sdpa_test_recognize.s 2>/dev/null || echo 0)
+    [ "$COUNT_BOTH" -gt 0 ] \
+        && ok "-mattn -mattn-recognize: attnrec transformed sdpa_test.c ($COUNT_BOTH occurrence(s))" \
+        || fail "-mattn -mattn-recognize did not transform sdpa_test.c — matcher or gate broken"
+else
+    fail "reference file not found: $SDPA_TEST"
+fi
 
 # ── Check 10: Baseline comparison ────────────────────────────────
-header "10. BASELINE vs -mattn COMPARISON"
-$GCC -O2 -fno-schedule-insns -fno-schedule-insns2 \
-    -S "$SRC" -o /tmp/sdpa_baseline.s 2>/dev/null
+header "10. BASELINE vs -mattn -mattn-recognize COMPARISON"
+$GCC -O2 \
+    -S "$SDPA_TEST" -o /tmp/sdpa_baseline.s 2>/dev/null
 
 BASE_LINES=$(wc -l < /tmp/sdpa_baseline.s)
 MATTN_LINES=$(wc -l < /tmp/sdpa_test_out.s 2>/dev/null || echo 0)
 BASE_BR=$(grep -c 'bne\|beq\|blt\|bge' /tmp/sdpa_baseline.s 2>/dev/null || echo 0)
 MATTN_BR=$(grep -c 'bne\|beq\|blt\|bge' /tmp/sdpa_test_out.s 2>/dev/null || echo 0)
 
-echo "  Without -mattn : $BASE_LINES lines, $BASE_BR branches"
-echo "  With    -mattn : $MATTN_LINES lines, $MATTN_BR branches"
+echo "  Without any flag        : $BASE_LINES lines, $BASE_BR branches"
+echo "  With -mattn -mattn-recognize : $MATTN_LINES lines, $MATTN_BR branches"
 echo "  attn instruction present: $(grep -c '\battn\b' /tmp/sdpa_test_out.s 2>/dev/null) occurrence(s)"
 ok "Comparison complete"
 
@@ -179,9 +204,10 @@ else
     echo "  $FAIL CHECK(S) FAILED — see details above."
 fi
 echo ""
-echo "  Instruction: attn a3,a0,a1,a2"
-echo "  Encoding   : 0x60b5068b  (R4-type, custom-0)"
-echo "  MATCH      : 0x0000000b"
-echo "  MASK       : 0x0600707f"
-echo "  GCC pass   : attnrec (tree-ssa-attn.cc, position #179)"
+echo "  Instruction : attn a3,a0,a1,a2"
+echo "  Encoding    : 0x60b5068b  (R4-type, custom-0)"
+echo "  MATCH       : 0x0000000b"
+echo "  MASK        : 0x0600707f"
+echo "  Primary path: -mattn alone (__builtin_riscv_attn, riscv-builtins.cc)"
+echo "  Recognizer  : -mattn -mattn-recognize (attnrec, tree-ssa-attn.cc, #179, experimental)"
 echo ""
