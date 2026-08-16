@@ -101,4 +101,13 @@ fi
 
 echo ""
 echo "  Toolchain ready at ${INSTALL}/bin"
-echo "  Next: ./05_test.sh ${MNEMONIC} ${INSTALL}"
+echo "  One build picked up every staged source change at once —"
+echo "  run the full checklist now rather than one-off spot checks:"
+echo "    ./05_test.sh ${MNEMONIC} ${INSTALL}"
+if [[ "${MNEMONIC}" == "attn" ]]; then
+  echo "    ../demo/verify_attn.sh ../demo/sdpa_builtin.c"
+  echo "    (sweep) for f in ../demo/failures/fail_*.c; do"
+  echo "      ${INSTALL}/bin/riscv64-unknown-elf-gcc -mattn -mattn-recognize -O2 -S \"\$f\" -o /tmp/out.s 2>/dev/null"
+  echo "      grep -q '\\battn\\b' /tmp/out.s && echo \"FAIL \$f\" || echo \"OK \$f\""
+  echo "    done"
+fi

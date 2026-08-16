@@ -7,8 +7,14 @@
 # Example:
 #   ./05_test.sh fds   $HOME/riscv-install   tests/fds.c
 #   ./05_test.sh nsum  $HOME/riscv-install   tests/nsum.c
+#   ./05_test.sh attn  $HOME/riscv-install   tests/attn.c
 #
 # Compiles the C file with -m<flag> -O2 -S and greps for the mnemonic.
+# This checks one flag only. If a mnemonic gates two independent
+# surfaces the way attn does (-mattn for the instruction/builtin,
+# -mattn-recognize for an experimental idiom recognizer on top), run
+# the recognizer's own checklist separately — see
+# ../demo/verify_attn.sh and ../demo/failures/README.md.
 
 set -euo pipefail
 
