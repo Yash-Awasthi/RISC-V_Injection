@@ -84,3 +84,9 @@ against the real opcode table, every backend for every format, batch specs,
 edit idempotency, CRLF preservation and missing-anchor failure. The LLVM, QEMU,
 Spike, renode, Sail and gem5 output follows the upstream file layouts but has
 not been built.
+
+Validated against real tools: the encoder and the `insn` output match stock
+gas 2.44 for every format, and six instructions injected into a copy of this
+tree's binutils 2.46 assemble to the same words `--encode` predicts. The suite
+also passes under mawk on Debian. Not validated: GCC edits on the real tree
+(only stand-in files), and the LLVM, QEMU, Spike, renode, Sail and gem5 output.
