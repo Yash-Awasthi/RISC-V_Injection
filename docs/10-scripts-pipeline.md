@@ -35,8 +35,8 @@ route:
 | File | Edit |
 |------|------|
 | `riscv.opt` | `-m<name>` flag and `TARGET_<NAME>` variable |
-| `riscv.md` | `UNSPEC_RISCV_<NAME>` and a `define_insn "riscv_<name>"` with real operand predicates |
-| `riscv-builtins.cc` | `AVAIL (x_<name>, ...)` and a `DIRECT_BUILTIN` row |
+| `riscv.md` | `UNSPEC_RISCV_<NAME>` (or `UNSPECV_` for stores and result-less insns) and a `define_insn "riscv_<name>"` with real operand predicates and, for memory insns, a `(clobber (mem:BLK (scratch)))` |
+| `riscv-builtins.cc` | `AVAIL (x_<name>, ...)` and a `DIRECT_BUILTIN` row (`DIRECT_NO_TARGET_BUILTIN` when there is no `rd`) |
 | `riscv-ftypes.def` | the function type, skipped if it already exists |
 
 ## Checks

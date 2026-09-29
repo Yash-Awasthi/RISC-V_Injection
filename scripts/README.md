@@ -16,6 +16,8 @@ scripts/inject.sh spec.txt --verify $HOME/riscv-install        # assemble + comp
 ## Spec
 
 Either flags or a `key=value` file (flags win). Only `mnemonic` is required.
+One file can hold several instructions separated by a line of `---`; they are
+allocated together so their encodings never overlap.
 
 | Key | Meaning |
 |-----|---------|
@@ -24,7 +26,11 @@ Either flags or a `key=value` file (flags win). Only `mnemonic` is required.
 | `operands` | comma list from `rd,rs1,rs2,rs3,imm` in assembly order; registers left out are locked to 0 in MATCH/MASK |
 | `opcode` | `custom-0`..`custom-3` or a 7-bit value ending in `0b11` (default: first slot with room) |
 | `funct3`, `funct7`, `funct2` | fixed fields, auto-allocated when absent |
-| `semantics` | C expression over `rs1 rs2 rs3 imm pc`; result goes to `rd` (format B: branch condition) |
+| `semantics` | C expression over `rs1 rs2 rs3 imm pc`. R, R4, I, U: value written to `rd`. S: value stored (default `rs2`). B: branch condition. J: unused |
+| `semantics_py` | the same in Python syntax, for renode (default: `semantics`) |
+| `semantics_sail` | the same in Sail over `X(rs1)` etc., required by the sail backend |
+| `width` | store width in bits: 8, 16, 32 or 64 (S only, default 64) |
+| `memory` | `yes` or `no`: touches memory in a way the compiler cannot see (default `yes` for S) |
 
 The script reads `binutils/include/opcode/riscv-opc.h` and refuses any
 encoding that overlaps an existing entry. CORE-V, T-Head and MIPS entries
@@ -35,18 +41,23 @@ in this tree.
 ## Backends
 
 Files land in `scripts/out/<mnemonic>/<backend>/`. `out/<mnemonic>/spec` can
-be passed back in to reproduce the same encoding.
+be passed back in to reproduce the same encoding. Backends that execute the
+instruction (spike, qemu, renode, gem5) skip with a message when there are no
+`semantics`.
 
-| Backend | Output | Notes |
-|---------|--------|-------|
-| `insn` | C macro header and GAS macro using `.insn` | works on any stock toolchain, no rebuild |
-| `binutils` | edits to `riscv-opc.h` and `riscv-opc.c` | tree edit with `--apply` |
-| `gcc` | `-m<name>` flag, `riscv.md` pattern, `__builtin_riscv_<name>` | tree edit with `--apply`; R, R4, I only; the same path `attn` uses |
-| `llvm` | TableGen `def`, intrinsic and pattern | R, R4, I; needs a feature predicate added by hand |
-| `spike` | extension plugin `.cc` | loaded with `--extlib`, no simulator rebuild |
-| `qemu` | decode line, translator, helper | R, R4, I, U |
-| `customasm` | `#ruledef` | R, R4, I, U |
-| `opcodes` | riscv-opcodes line | all formats |
+| Backend | Output | Formats |
+|---------|--------|---------|
+| `insn` | C macro header and GAS macro using `.insn`; works on any stock toolchain, no rebuild | all (B and J: GAS macro only) |
+| `binutils` | edits to `riscv-opc.h` and `riscv-opc.c` (tree edit with `--apply`) | all |
+| `gcc` | `-m<name>` flag, `riscv.md` pattern, `__builtin_riscv_<name>` (tree edit with `--apply`); the path `attn` uses. Stores and result-less insns use `unspec_volatile` and a memory clobber | R, R4, I, S, U |
+| `llvm` | TableGen `def`, intrinsic and pattern; needs a feature predicate added by hand | all |
+| `spike` | extension plugin `.cc`, loaded with `--extlib`, no simulator rebuild | all |
+| `qemu` | decode line, translator, helper | all |
+| `customasm` | `#ruledef` | all |
+| `opcodes` | riscv-opcodes line | all |
+| `renode` | `InstallCustomInstructionHandlerFromString` line, no rebuild | R, R4, I, U |
+| `sail` | sail-riscv union, encdec, assembly and execute clauses | R, R4, I, U, S |
+| `gem5` | `decoder.isa` entry | R, I, S, B, U, J |
 
 Unsupported format and backend pairs are skipped with a message.
 
@@ -69,6 +80,7 @@ bash scripts/tests/test_inject.sh
 ```
 
 Covers the encoder against hand-checked RISC-V words, collision detection
-against the real opcode table, every backend for every format, edit
-idempotency, CRLF preservation and missing-anchor failure. The LLVM, QEMU and
-Spike output follows the upstream file layouts but has not been built.
+against the real opcode table, every backend for every format, batch specs,
+edit idempotency, CRLF preservation and missing-anchor failure. The LLVM, QEMU,
+Spike, renode, Sail and gem5 output follows the upstream file layouts but has
+not been built.

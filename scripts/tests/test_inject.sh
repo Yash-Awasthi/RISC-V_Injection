@@ -167,6 +167,80 @@ t_dry() {
 }
 check "--dry-run leaves the tree alone" t_dry
 
+# 7. reach: every format in every backend that can express it
+t_reach() {
+  local fmt fl d
+  for fmt in R R4 I S B U J; do
+    fl=$(echo "$fmt" | tr 'A-Z' 'a-z')
+    inj --tree "$EMPTY" --mnemonic "rc$fl" --format "$fmt" --semantics 'rs1 + rs2' \
+        --semantics-sail 'X(rs1) + X(rs2)' >"$TMP/o" 2>&1 || { cat "$TMP/o"; return 1; }
+    d=$TMP/out/rc$fl
+    case $fmt in B|J) ;; *) [ -s "$d/gcc/rc$fl.c" ] || { echo "gcc $fmt"; return 1; };; esac
+    [ -s "$d/llvm/RISCVInstrRC$(echo "$fl" | tr a-z A-Z).td" ] || { echo "llvm $fmt"; return 1; }
+    [ -s "$d/spike/rc${fl}_ext.cc" ] || { echo "spike $fmt"; return 1; }
+    [ -s "$d/qemu/trans_rc$fl.c.inc" ] || { echo "qemu $fmt"; return 1; }
+    [ -s "$d/customasm/rc$fl.asm" ] || { echo "customasm $fmt"; return 1; }
+    [ -s "$d/gem5/decoder.isa.add" ] || [ "$fmt" = R4 ] || { echo "gem5 $fmt"; return 1; }
+    case $fmt in R|R4|I|U) [ -s "$d/renode/rc$fl.resc" ] || { echo "renode $fmt"; return 1; };; esac
+    case $fmt in R|R4|I|U|S) [ -s "$d/sail/rc$fl.sail" ] || { echo "sail $fmt"; return 1; };; esac
+  done
+  grep -q 'vmem_write(rs1, offset, 8' "$TMP/out/rcs/sail/rcs.sail" &&
+  grep -q 'MMU.store<uint64_t>' "$TMP/out/rcs/spike/rcs_ext.cc" &&
+  grep -q 'tcg_gen_qemu_st_tl' "$TMP/out/rcs/qemu/trans_rcs.c.inc" &&
+  grep -q 'off\[20:20\] @ off\[10:1\]' "$TMP/out/rcj/customasm/rcj.asm" &&
+  grep -q 'RVInstB<' "$TMP/out/rcb/llvm/RISCVInstrRCB.td" &&
+  grep -q 'gen_jal' "$TMP/out/rcj/qemu/trans_rcj.c.inc" &&
+  grep -q 'DIRECT_NO_TARGET_BUILTIN (rcs' "$TMP/out/rcs/gcc/g5.block" &&
+  grep -q 'iiiiiiiiiiiiaaaaa' "$TMP/out/rci/renode/rci.resc"
+}
+check "every format reaches every backend that can express it" t_reach
+
+t_width() {
+  inj --tree "$EMPTY" --mnemonic st16 --format S --width 16 --semantics 'rs2' --semantics-sail 'X(rs2)' >/dev/null || return 1
+  grep -q 'MMU.store<uint16_t>' "$TMP/out/st16/spike/st16_ext.cc" &&
+  grep -q 'MO_UW' "$TMP/out/st16/qemu/trans_st16.c.inc" &&
+  grep -q 'Mem_uh' "$TMP/out/st16/gem5/decoder.isa.add" &&
+  grep -q 'vmem_write(rs1, offset, 2' "$TMP/out/st16/sail/st16.sail"
+}
+check "store width flows into spike, qemu, gem5 and sail" t_width
+
+t_needs_semantics() {
+  local out
+  out=$(inj --tree "$EMPTY" --mnemonic nosem --format R 2>&1) || return 1
+  case $out in *"spike: skipped (needs semantics)"*) ;; *) echo "$out"; return 1;; esac
+  [ -s "$TMP/out/nosem/insn/nosem.h" ] && [ ! -e "$TMP/out/nosem/spike" ]
+}
+check "backends that execute the insn skip without semantics" t_needs_semantics
+
+# 8. several instructions in one spec never overlap
+t_batch() {
+  local m
+  printf 'mnemonic=b1\nformat=R\nsemantics=rs1+rs2\n---\nmnemonic=b2\nformat=R\nsemantics=rs1-rs2\n---\nmnemonic=b3\nformat=R4\nsemantics=rs1*rs2+rs3\n' > "$TMP/batch.spec"
+  inj --tree "$EMPTY" "$TMP/batch.spec" --backend opcodes >"$TMP/o" 2>&1 || { cat "$TMP/o"; return 1; }
+  [ "$(grep -c 'MATCH=' "$TMP/o")" -eq 3 ] &&
+  [ "$(grep 'MATCH=' "$TMP/o" | sed 's/.*MATCH=\(0x[0-9a-f]*\).*/\1/' | sort -u | wc -l | tr -d ' ')" -eq 3 ] &&
+  [ -s "$TMP/out/b1/spec" ] && [ -s "$TMP/out/b2/spec" ] && [ -s "$TMP/out/b3/spec" ]
+}
+check "batch spec allocates non-overlapping encodings" t_batch
+
+# 9. gcc: store-like insn (no result, memory) uses unspecv and the no-target builtin
+t_gcc_store() {
+  local d="$TMP/gccs" r
+  r=$d/gcc/gcc/config/riscv; mkdir -p "$r"
+  printf 'mfoo\n' > "$r/riscv.opt"
+  printf '(define_c_enum "unspec" [\n  UNSPEC_X\n])\n(define_c_enum "unspecv" [\n  UNSPECV_X\n])\n(define_insn "nop"\n  [(const_int 0)]\n  "" "nop")\n' > "$r/riscv.md"
+  printf 'AVAIL (hint_pause, (!0))\n  DIRECT_BUILTIN (frflags, RISCV_USI_FTYPE, hard_float),\n' > "$r/riscv-builtins.cc"
+  printf 'DEF_RISCV_FTYPE (0, (VOID))\n' > "$r/riscv-ftypes.def"
+  inj --tree "$d" --mnemonic stx --format S --backend gcc --apply --yes --force >/dev/null || return 1
+  [ "$(count 'UNSPECV_RISCV_STX' "$r/riscv.md")" -eq 2 ] &&
+  [ "$(sed -n '5p' "$r/riscv.md")" = '  UNSPECV_RISCV_STX' ] &&
+  grep -q 'clobber (mem:BLK (scratch))' "$r/riscv.md" &&
+  grep -q '"stx\\t%0,%2(%1)"' "$r/riscv.md" &&
+  grep -q 'DIRECT_NO_TARGET_BUILTIN (stx, RISCV_VOID_FTYPE_UDI_UDI_SI, x_stx)' "$r/riscv-builtins.cc" &&
+  grep -q 'DEF_RISCV_FTYPE (3, (VOID, UDI, UDI, SI))' "$r/riscv-ftypes.def"
+}
+check "gcc store-like insn: unspecv, mem clobber, no-target builtin" t_gcc_store
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

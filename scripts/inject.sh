@@ -1,28 +1,35 @@
 #!/usr/bin/env bash
 # inject.sh - one instruction spec in, custom RISC-V support for every tool out.
 #
-# Pure bash + POSIX tools (awk sed head tail tr od mktemp). Runs unchanged on
+# Pure bash + POSIX tools (awk sed head tail tr od mktemp seq). Runs unchanged on
 # Linux, macOS, WSL and Windows Git Bash / MSYS2 / Cygwin. No Python.
 #
 #   inject.sh [SPEC_FILE] [options]
 #   inject.sh --mnemonic mac --format R4 --semantics 'rs1 * rs2 + rs3'
 #
-# Spec (SPEC_FILE lines are key=value, '#' comments; every flag overrides the file):
-#   --mnemonic N     lowercase name, [a-z][a-z0-9_.]*         (gcc backend: no dots)
-#   --format F       R | R4 | I | S | B | U | J               (default R)
-#   --operands LIST  comma list from rd,rs1,rs2,rs3,imm in assembly order
-#                    (default: the whole format). Registers left out are locked
-#                    to 0 in MATCH/MASK.
-#   --opcode O       custom-0..custom-3 or a 7-bit int ending in 0b11
-#                    (default: first slot with room; CORE-V, T-Head and MIPS
-#                    entries already crowd custom-0)
-#   --funct3/--funct7/--funct2 N   fixed fields (auto-allocated when absent)
-#   --semantics E    C expression over rs1 rs2 rs3 imm pc, result goes to rd
-#                    (format B: branch condition; J: ignored). Used by spike, qemu.
+# A SPEC_FILE holds key=value lines and '#' comments. Several instructions can
+# share one file, separated by a line of '---'; they are allocated together so
+# their encodings never overlap. Flags override the file (single spec only).
 #
-# Backends (--backend LIST|all, default all): insn binutils gcc llvm spike qemu
-# customasm opcodes. Files land in OUT/<mnemonic>/<backend>/. Only binutils and
-# gcc edit a source tree, and only with --apply.
+# Spec keys (also flags of the same name, without the 'spec' file):
+#   mnemonic   lowercase name, [a-z][a-z0-9_.]*  (gcc backend: no dots)
+#   format     R | R4 | I | S | B | U | J                    (default R)
+#   operands   comma list from rd,rs1,rs2,rs3,imm in assembly order (default: the
+#              whole format). Registers left out are locked to 0 in MATCH/MASK.
+#   opcode     custom-0..custom-3 or a 7-bit int ending in 0b11 (default: first
+#              slot with room; CORE-V, T-Head and MIPS already crowd custom-0)
+#   funct3 funct7 funct2   fixed fields (auto-allocated when absent)
+#   semantics  C expression over rs1 rs2 rs3 imm pc. R/R4/I/U: value written to
+#              rd. S: value stored (default rs2). B: branch condition. J: unused.
+#   semantics_py    same in Python syntax (renode); default: semantics
+#   semantics_sail  same in Sail syntax over X(rs1) etc. (sail backend needs it)
+#   width      store width in bits, 8|16|32|64 (S only, default 64)
+#   memory     yes|no: touches memory in a way the compiler cannot see
+#              (default: yes for S, else no)
+#
+# Backends (--backend LIST|all): insn binutils gcc llvm spike qemu customasm
+# opcodes renode sail gem5. Files land in OUT/<mnemonic>/<backend>/. Only binutils
+# and gcc edit a source tree, and only with --apply.
 #
 # Other modes:
 #   --encode 'rd=3,rs1=1,imm=16'   print the 32-bit word for these operands
@@ -50,10 +57,15 @@ trim()  { local s=$1; s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}
 hex8()  { printf '0x%08x' "$1"; }
 
 has_op() { case " $OPS " in *" $1 "*) return 0;; esac; return 1; }
-
 is_num() { case $1 in ''|*[!0-9a-fA-FxX]*) return 1;; esac; return 0; }
 
-# awk-based @KEY@ substitution: no regex/backslash/ampersand surprises in values.
+bin() {  # bin WIDTH VALUE -> zero-padded binary
+  local w=$1 v=$(($2)) out="" i
+  for ((i = w - 1; i >= 0; i--)); do out="$out$(((v >> i) & 1))"; done
+  echo "$out"
+}
+
+# @KEY@ substitution done by awk index/substr: values may hold any character.
 # Keys come from $RKEYS; values from exported V_<KEY>.
 render() {
   awk 'BEGIN { n = split(ENVIRON["RKEYS"], K, " ") }
@@ -78,6 +90,11 @@ emit() {  # emit PATH : write stdin to OUT/MN/BACKEND/PATH
 
 skip() { say "$BE: skipped ($*)"; }
 
+need_sem() {  # backends that execute the instruction need semantics
+  if [ -z "$SEM" ]; then skip "needs semantics"; return 1; fi
+  return 0
+}
+
 # ── format tables ──────────────────────────────────────────────────
 
 fmt_regs() {
@@ -92,18 +109,17 @@ fmt_default_ops() {
     S) echo "rs2 rs1 imm";; B) echo "rs1 rs2 imm";; U|J) echo "rd imm";;
   esac
 }
-reg_mask() {
-  case $1 in
-    rd) echo $((0x1f << 7));; rs1) echo $((0x1f << 15));;
-    rs2) echo $((0x1f << 20));; rs3) echo $((0x1f << 27));;
-  esac
-}
+reg_shift() { case $1 in rd) echo 7;; rs1) echo 15;; rs2) echo 20;; rs3) echo 27;; esac; }
+reg_mask()  { echo $((0x1f << $(reg_shift "$1"))); }
 slot_value() {
   case $1 in
     custom-0) echo $((0x0b));; custom-1) echo $((0x2b));;
     custom-2) echo $((0x5b));; custom-3) echo $((0x7b));;
     *) is_num "$1" || die "bad opcode '$1'"; echo $(($1));;
   esac
+}
+imm_bits() {  # width of the immediate field of the format
+  case $1 in I|S|B) echo 12;; U|J) echo 20;; esac
 }
 
 # compute_enc: MATCH/MASK from OPC F3 F7 F2 FMT OPS
@@ -117,21 +133,24 @@ compute_enc() {
   esac
   local r
   for r in $(fmt_regs "$FMT"); do
-    has_op "$r" || MASK=$((MASK | $(reg_mask "$r")))
+    if ! has_op "$r"; then MASK=$((MASK | $(reg_mask "$r"))); fi
   done
 }
 
 # ── spec loading ───────────────────────────────────────────────────
 
-C_MN= C_FMT= C_OPC= C_F3= C_F7= C_F2= C_OPS= C_SEM=
-MN= FMT= OPC_IN= F3= F7= F2= OPS= SEM=
+C_MN= C_FMT= C_OPC= C_F3= C_F7= C_F2= C_OPS= C_SEM= C_SEMPY= C_SEMSAIL= C_WIDTH= C_MEM=
+MN= FMT= OPC_IN= F3= F7= F2= OPS= SEM= SEMPY= SEMSAIL= WIDTH= MEMORY= OPC=
 
-spec_set() {  # spec_set KEY VALUE (source: file)
+reset_spec() { MN= FMT= OPC_IN= F3= F7= F2= OPS= SEM= SEMPY= SEMSAIL= WIDTH= MEMORY= OPC=; }
+
+spec_set() {
   case $1 in
     mnemonic) MN=$2;; format) FMT=$2;; opcode) OPC_IN=$2;;
     funct3) F3=$2;; funct7) F7=$2;; funct2) F2=$2;;
     operands) OPS=$(printf '%s' "$2" | tr ',' ' ');;
-    semantics) SEM=$2;;
+    semantics) SEM=$2;; semantics_py) SEMPY=$2;; semantics_sail) SEMSAIL=$2;;
+    width) WIDTH=$2;; memory) MEMORY=$2;;
     *) die "unknown spec key '$1'";;
   esac
 }
@@ -148,6 +167,21 @@ load_spec_file() {
   done < "$1"
 }
 
+apply_cli() {
+  if [ -n "$C_MN" ]; then MN=$C_MN; fi
+  if [ -n "$C_FMT" ]; then FMT=$C_FMT; fi
+  if [ -n "$C_OPC" ]; then OPC_IN=$C_OPC; fi
+  if [ -n "$C_F3" ]; then F3=$C_F3; fi
+  if [ -n "$C_F7" ]; then F7=$C_F7; fi
+  if [ -n "$C_F2" ]; then F2=$C_F2; fi
+  if [ -n "$C_OPS" ]; then OPS=$C_OPS; fi
+  if [ -n "$C_SEM" ]; then SEM=$C_SEM; fi
+  if [ -n "$C_SEMPY" ]; then SEMPY=$C_SEMPY; fi
+  if [ -n "$C_SEMSAIL" ]; then SEMSAIL=$C_SEMSAIL; fi
+  if [ -n "$C_WIDTH" ]; then WIDTH=$C_WIDTH; fi
+  if [ -n "$C_MEM" ]; then MEMORY=$C_MEM; fi
+}
+
 normalise() {
   [ -n "$MN" ] || die "need --mnemonic (or a spec file)"
   case $MN in [a-z]*) ;; *) die "mnemonic must start with a-z";; esac
@@ -155,7 +189,7 @@ normalise() {
   [ -n "$FMT" ] || FMT=R
   case $FMT in R|R4|I|S|B|U|J) ;; *) die "format must be R R4 I S B U J";; esac
   [ -n "$OPS" ] || OPS=$(fmt_default_ops "$FMT")
-  local allowed o seen=" "
+  local allowed o seen=" " v val
   allowed="$(fmt_regs "$FMT")"
   case $FMT in I|S|B|U|J) allowed="$allowed imm";; esac
   for o in $OPS; do
@@ -163,7 +197,6 @@ normalise() {
     case "$seen" in *" $o "*) die "operand '$o' listed twice";; esac
     seen="$seen$o "
   done
-  local v
   for v in F3:7 F7:127 F2:3; do
     eval "val=\${${v%%:*}}"
     [ -z "$val" ] && continue
@@ -173,11 +206,14 @@ normalise() {
   if [ -n "$OPC_IN" ]; then
     OPC=$(slot_value "$OPC_IN")
     [ $((OPC & 3)) -eq 3 ] && [ "$OPC" -le 127 ] || die "opcode must be 7 bits ending in 0b11"
-  else
-    OPC=
   fi
-  [ -n "$SEM" ] || SEM=0
-  case $SEM in *$'\n'*|*$'\r'*) die "semantics must be one line";; esac
+  [ -n "$WIDTH" ] || WIDTH=64
+  case $WIDTH in 8|16|32|64) ;; *) die "width must be 8, 16, 32 or 64";; esac
+  if [ -z "$MEMORY" ]; then if [ "$FMT" = S ]; then MEMORY=yes; else MEMORY=no; fi; fi
+  case $MEMORY in yes|no) ;; *) die "memory must be yes or no";; esac
+  if [ -z "$SEM" ] && [ "$FMT" = S ]; then SEM=rs2; fi
+  [ -n "$SEMPY" ] || SEMPY=$SEM
+  case "$SEM$SEMPY$SEMSAIL" in *$'\n'*|*$'\r'*) die "semantics must be one line";; esac
 }
 
 # ── existing encodings (collision check) ───────────────────────────
@@ -185,18 +221,16 @@ normalise() {
 find_opc_h() {
   local h
   for h in "$TREE/binutils/include/opcode/riscv-opc.h" "$TREE/include/opcode/riscv-opc.h"; do
-    [ -f "$h" ] && { echo "$h"; return 0; }
+    if [ -f "$h" ]; then echo "$h"; return 0; fi
   done
   return 1
 }
 
 EN=(); EM=(); EK=()
 load_existing() {
-  local h n m k own
-  own=$(symof "$MN")
+  local h n m k
   h=$(find_opc_h) || return 0
   while read -r n m k; do
-    [ "$n" = "$own" ] && continue
     EN+=("$n"); EM+=($((m))); EK+=($((k)))
   done < <(awk '{ sub(/\r$/, "") }
        $1 == "#define" && $2 ~ /^MATCH_/ && $3 ~ /^0[xX][0-9a-fA-F]+$/ { m[substr($2, 7)] = $3 }
@@ -205,12 +239,15 @@ load_existing() {
   say "checking against ${#EN[@]} encodings from $h"
 }
 
-# FN/FM/FK: existing entries that can overlap the given opcode (cheap prefilter)
+# FN/FM/FK: existing entries that can overlap the given opcode (cheap prefilter).
+# The instruction itself is skipped so that re-running after --apply is stable.
 FN=(); FM=(); FK=()
 filter_for_opcode() {
-  local i
+  local i own
+  own=$(symof "$MN")
   FN=(); FM=(); FK=()
   for ((i = 0; i < ${#EN[@]}; i++)); do
+    if [ "${EN[i]}" = "$own" ]; then continue; fi
     if [ $((EK[i] & 0x7f)) -eq 127 ] && [ $((EM[i] & 0x7f)) -ne "$1" ]; then continue; fi
     FN+=("${EN[i]}"); FM+=("${EM[i]}"); FK+=("${EK[i]}")
   done
@@ -242,18 +279,22 @@ allocate() {
     done; done; done
   done
   if [ $found -eq 0 ]; then
-    if [ -n "$OPC_IN" ] || [ -n "$C_OPC" ]; then
+    if [ -n "$OPC_IN" ]; then
       compute_enc
-      collides "$MATCH" "$MASK" && die "encoding $(hex8 "$MATCH")/$(hex8 "$MASK") overlaps existing '$COLLIDE_WITH'"
+      if collides "$MATCH" "$MASK"; then
+        die "encoding $(hex8 "$MATCH")/$(hex8 "$MASK") overlaps existing '$COLLIDE_WITH'"
+      fi
     fi
     die "no free encoding left${OPC_IN:+ in opcode $OPC_IN}; try another --opcode, or --operands with fewer register fields"
   fi
+  # later instructions in the same batch must not reuse this encoding
+  EN+=("$(symof "$MN")"); EM+=("$MATCH"); EK+=("$MASK")
 }
 
 # ── encode ─────────────────────────────────────────────────────────
 
 do_encode() {
-  local kv k v w val regs=" " imm=0
+  local kv k v w val regs=" " imm=0 sh
   for kv in $(printf '%s' "$1" | tr ',' ' '); do
     k=${kv%%=*}; v=${kv#*=}
     has_op "$k" || die "'$k' is not an operand of $MN ($OPS)"
@@ -266,11 +307,10 @@ do_encode() {
     fi
   done
   w=$MATCH
-  local sh
   for k in rd rs1 rs2 rs3; do
     case $regs in *" $k="*)
       val=${regs#*" $k="}; val=${val%% *}
-      case $k in rd) sh=7;; rs1) sh=15;; rs2) sh=20;; rs3) sh=27;; esac
+      sh=$(reg_shift $k)
       w=$((w | val << sh));;
     esac
   done
@@ -295,7 +335,10 @@ do_encode() {
 
 order_index() {  # position of operand $1 among asm operands (rd first, then rest)
   local o i=0
-  for o in $ORDER; do [ "$o" = "$1" ] && { echo $i; return; }; i=$((i + 1)); done
+  for o in $ORDER; do
+    if [ "$o" = "$1" ]; then echo $i; return 0; fi
+    i=$((i + 1))
+  done
 }
 ref_asm() {
   if has_op "$1"; then echo "%$(order_index "$1")"
@@ -323,24 +366,23 @@ insn_line() {  # $1 = ref function
 
 be_insn() {
   BE=insn
-  local sym U o asm macro head
+  local sym U o asm macro head mlist="" clist="" out_c="" pre="" post="" clob=""
   sym=$(symof "$MN"); U=$(upper "$sym")
   ORDER=""
-  has_op rd && ORDER="rd"
+  if has_op rd; then ORDER="rd"; fi
   for o in $OPS; do [ "$o" = rd ] || ORDER="$ORDER${ORDER:+ }$o"; done
   asm=$(insn_line ref_asm)
   macro=$(insn_line ref_mac)
   head="/* $MN: $FMT-type, MATCH $(hex8 "$MATCH") MASK $(hex8 "$MASK") */"
 
-  # C wrapper (macro so that 'i' operands work at every -O level; GNU C).
-  local mlist="" clist="" out_c="" pre="" post="" clob=""
+  # C wrapper is a macro so that 'i' operands work at every -O level (GNU C).
   for o in $OPS; do
     [ "$o" = rd ] && continue
     mlist="$mlist${mlist:+, }$o"
     if [ "$o" = imm ]; then clist="$clist${clist:+, }\"i\"(imm)"
     else clist="$clist${clist:+, }\"r\"($o)"; fi
   done
-  case $FMT in S) clob=' : "memory"';; esac
+  if [ "$MEMORY" = yes ]; then clob=' : "memory"'; fi
   if has_op rd; then
     out_c='"=r"(_rd)'
     pre='({ long _rd; '; post=' _rd; })'
@@ -370,7 +412,7 @@ be_insn() {
 # ── backend: binutils ──────────────────────────────────────────────
 
 asm_operands() {  # binutils operand string
-  local o s=""
+  local o s="" c=""
   if [ "$FMT" = S ]; then echo "t,q(s)"; return; fi
   for o in $OPS; do
     case $o in
@@ -406,42 +448,73 @@ be_binutils() {
 
 be_gcc() {
   BE=gcc
-  case $FMT in R|R4|I) ;; *) skip "format $FMT has no register-result builtin"; return;; esac
+  case $FMT in B|J) skip "control flow cannot be a builtin; use the insn backend"; return;; esac
   case $MN in *[!a-z0-9_]*) skip "mnemonic must be [a-z0-9_] for a -m flag"; return;; esac
-  has_op rd || { skip "needs rd"; return; }
-  local U sym ins="" nin=0 o expect="rd" asmargs="%0" opnds decl="" unspec="" i=0 ftype ftypedef="" atypes="" args=""
+  if [ "$FMT" = S ] && ! { has_op rs1 && has_op rs2; }; then skip "S-type needs rs1 and rs2"; return; fi
+  local U sym o k setrd=0 vol=0 unspec="" atypes="" ret ftype ftypedef nin uns enum setx body asmargs
+  local pad='                    ' inum
   sym=$MN; U=$(upper "$sym")
-  for o in $OPS; do [ "$o" = rd ] || ins="$ins $o"; done
-  case " $OPS" in " rd "*) ;; *) skip "rd must be the first operand"; return;; esac
-  # operand numbers: rd = 0, the rest 1..n in listed order
-  for o in $ins; do
-    i=$((i + 1))
-    asmargs="$asmargs,%$i"
+  if has_op rd; then setrd=1; N_rd=0; fi
+  k=$setrd
+  for o in $OPS; do
+    [ "$o" = rd ] && continue
+    eval "N_$o=$k"
     if [ "$o" = imm ]; then
       unspec="$unspec${unspec:+
-                    }(match_operand:SI $i \"const_int_operand\" \"n\")"
+$pad}(match_operand:SI $k \"const_int_operand\" \"n\")"
       atypes="$atypes, SI"
     else
       unspec="$unspec${unspec:+
-                    }(match_operand:DI $i \"register_operand\" \"r\")"
+$pad}(match_operand:DI $k \"register_operand\" \"r\")"
       atypes="$atypes, UDI"
     fi
+    k=$((k + 1))
   done
-  nin=$i
-  [ $nin -ge 1 ] || { skip "needs at least one input operand"; return; }
-  ftype="UDI_FTYPE$(printf '%s' "$atypes" | tr -d ' ' | tr ',' '_')"
-  ftypedef="DEF_RISCV_FTYPE ($nin, (UDI$atypes))"
+  nin=$((k - setrd))
+  if [ $nin -eq 0 ] && [ $setrd -eq 0 ]; then skip "nothing to pass and nothing to return"; return; fi
+  if [ $nin -eq 0 ]; then unspec="(const_int 0)"; fi
+  if [ "$MEMORY" = yes ] || [ $setrd -eq 0 ] || [ $nin -eq 0 ]; then vol=1; fi
+  if [ $vol -eq 1 ]; then uns=unspec_volatile; enum="UNSPECV_RISCV_$U"; else uns=unspec; enum="UNSPEC_RISCV_$U"; fi
+  if [ $setrd -eq 1 ]; then
+    setx="(set (match_operand:DI 0 \"register_operand\" \"=r\")
+        ($uns:DI [$unspec]
+$pad$enum))"
+    ret=UDI
+  else
+    setx="($uns [$unspec]
+        $enum)"
+    ret=VOID
+  fi
+  if [ "$MEMORY" = yes ]; then
+    body="[$setx
+   (clobber (mem:BLK (scratch)))]"
+  else
+    body="[$setx]"
+  fi
+  # asm template: operands in listed order; S prints imm(rs1)
+  if [ "$FMT" = S ]; then
+    inum=0; has_op imm && inum="%$N_imm"
+    asmargs="%$N_rs2,$inum(%$N_rs1)"
+  else
+    asmargs=""
+    for o in $OPS; do eval "asmargs=\"\$asmargs\${asmargs:+,}%\$N_$o\""; done
+  fi
+  ftype="${ret}_FTYPE$(printf '%s' "$atypes" | tr -d ' ' | tr ',' '_')"
+  ftypedef="DEF_RISCV_FTYPE ($nin, ($ret$atypes))"
   PDIR="$OUT/$MN/gcc"; mkdir -p "$PDIR"; : > "$PDIR/patches.list"
 
   printf '\nm%s\nTarget Var(TARGET_%s) Init(0)\nEnable the custom %s instruction and __builtin_riscv_%s.\n' \
     "$sym" "$U" "$MN" "$sym" | patch_add g1 gcc/gcc/config/riscv/riscv.opt eof '' below
-  printf '  UNSPEC_RISCV_%s\n' "$U" |
-    patch_add g2 gcc/gcc/config/riscv/riscv.md contains 'define_c_enum "unspec"' below
+  if [ $vol -eq 1 ]; then
+    printf '  UNSPECV_RISCV_%s\n' "$U" |
+      patch_add g2 gcc/gcc/config/riscv/riscv.md contains 'define_c_enum "unspecv"' below
+  else
+    printf '  UNSPEC_RISCV_%s\n' "$U" |
+      patch_add g2 gcc/gcc/config/riscv/riscv.md contains 'define_c_enum "unspec"' below
+  fi
   cat <<EOF | patch_add g3 gcc/gcc/config/riscv/riscv.md startswith '(define_insn "nop"' above
 (define_insn "riscv_$sym"
-  [(set (match_operand:DI 0 "register_operand" "=r")
-        (unspec:DI [$unspec]
-                   UNSPEC_RISCV_$U))]
+  $body
   "TARGET_$U"
   "$MN\\t$asmargs"
   [(set_attr "type" "unknown")
@@ -450,26 +523,32 @@ be_gcc() {
 EOF
   printf 'AVAIL (x_%s, TARGET_%s && TARGET_64BIT)\n' "$sym" "$U" |
     patch_add g4 gcc/gcc/config/riscv/riscv-builtins.cc startswith 'AVAIL (hint_pause' below
-  printf '  DIRECT_BUILTIN (%s, RISCV_%s, x_%s),\n' "$sym" "$ftype" "$sym" |
-    patch_add g5 gcc/gcc/config/riscv/riscv-builtins.cc contains 'DIRECT_BUILTIN (frflags' above
+  if [ $setrd -eq 1 ]; then
+    printf '  DIRECT_BUILTIN (%s, RISCV_%s, x_%s),\n' "$sym" "$ftype" "$sym"
+  else
+    printf '  DIRECT_NO_TARGET_BUILTIN (%s, RISCV_%s, x_%s),\n' "$sym" "$ftype" "$sym"
+  fi | patch_add g5 gcc/gcc/config/riscv/riscv-builtins.cc contains 'DIRECT_BUILTIN (frflags' above
   printf '%s\n' "$ftypedef" |
     patch_add g6 gcc/gcc/config/riscv/riscv-ftypes.def startswith 'DEF_RISCV_FTYPE (0, (VOID))' above
 
   # generated smoke test: compile and look for the mnemonic
-  for o in $ins; do args="$args${args:+, }$o"; done
   {
+    local first=1 a=""
     echo "/* Compile: riscv64-unknown-elf-gcc -m$sym -O2 -S $sym.c && grep -w $MN $sym.s */"
-    printf 'long test_%s(' "$sym"
-    local a="" first=1
-    for o in $ins; do
+    if [ $setrd -eq 1 ]; then printf 'unsigned long test_%s(' "$sym"; else printf 'void test_%s(' "$sym"; fi
+    for o in $OPS; do
+      [ "$o" = rd ] && continue
       [ "$o" = imm ] && continue
       [ $first -eq 1 ] || printf ', '
-      printf 'long %s' "$o"; first=0
+      printf 'unsigned long %s' "$o"; first=0
     done
-    [ $first -eq 1 ] && printf 'void'
-    printf ')\n{\n  return __builtin_riscv_%s(' "$sym"
+    if [ $first -eq 1 ]; then printf 'void'; fi
+    printf ')\n{\n  '
+    if [ $setrd -eq 1 ]; then printf 'return '; fi
+    printf '__builtin_riscv_%s(' "$sym"
     first=1
-    for o in $ins; do
+    for o in $OPS; do
+      [ "$o" = rd ] && continue
       [ $first -eq 1 ] || printf ', '
       if [ "$o" = imm ]; then printf '5'; else printf '%s' "$o"; fi
       first=0
@@ -483,53 +562,75 @@ EOF
 
 be_llvm() {
   BE=llvm
-  case $FMT in R|R4|I) ;; *) skip "format $FMT"; return;; esac
-  local slot="" s sym U cls outs="(outs)" ins="" argstr="" o zero="" n=0 tys="" pat=""
+  local slot="" s sym U cls outs="(outs)" ins="" argstr="" o zero="" tys="" pat="" pargs="" pk="" iname ity
+  local props="hasSideEffects = 0, mayLoad = 0, mayStore = 0" k=0 ret="[]" iprops="IntrNoMem" argk=0 attr=""
   for s in 0 1 2 3; do [ "$(slot_value custom-$s)" -eq "$OPC" ] && slot=$s; done
   [ -n "$slot" ] || { skip "opcode is not custom-0..3"; return; }
   sym=$(symof "$MN"); U=$(upper "$sym")
+  case $FMT in
+    I|S|B) iname=imm12;; U|J) iname=imm20;; *) iname=;;
+  esac
+  case $FMT in I|S) ity=simm12;; B) ity=simm13_lsb0;; U) ity=uimm20_lui;; J) ity=simm21_lsb0_jal;; esac
   for o in $OPS; do
-    argstr="$argstr${argstr:+, }\$$o"
     case $o in
-      rd) outs='(outs GPR:$rd)';;
-      imm) ins="$ins${ins:+, }simm12:\$imm";;
-      *) ins="$ins${ins:+, }GPR:\$$o"; n=$((n + 1))
-         tys="$tys${tys:+, }llvm_anyint_ty"; pat="$pat${pat:+, }GPR:\$$o";;
+      rd) outs='(outs GPR:$rd)'; ret="[llvm_anyint_ty]"; argstr="$argstr${argstr:+, }\$rd";;
+      imm) ins="$ins${ins:+, }$ity:\$$iname"
+           if [ "$FMT" = S ]; then :; else argstr="$argstr${argstr:+, }\$$iname"; fi
+           tys="$tys${tys:+, }llvm_i32_ty"; pat="$pat${pat:+, }timm:\$$iname"; pargs="$pargs${pargs:+, }timm:\$$iname"
+           attr="$attr${attr:+, }ImmArg<ArgIndex<$argk>>"; argk=$((argk + 1));;
+      *) ins="$ins${ins:+, }GPR:\$$o"
+         if [ "$FMT" = S ]; then :; else argstr="$argstr${argstr:+, }\$$o"; fi
+         tys="$tys${tys:+, }llvm_anyint_ty"; pat="$pat${pat:+, }GPR:\$$o"; pargs="$pargs${pargs:+, }GPR:\$$o"
+         argk=$((argk + 1));;
     esac
   done
-  for o in $(fmt_regs "$FMT"); do has_op "$o" || zero="$zero${zero:+, }$o = 0"; done
+  if [ "$FMT" = S ]; then
+    if has_op imm && has_op rs1 && has_op rs2; then argstr="\$rs2, \${$iname}(\${rs1})"
+    else for o in $OPS; do argstr="$argstr${argstr:+, }\$$o"; done; fi
+  fi
+  for o in $(fmt_regs "$FMT"); do has_op "$o" || zero="$zero, $o = 0"; done
+  if [ -n "$iname" ] && ! has_op imm; then zero="$zero, $iname = 0"; fi
   case $FMT in
     R)  cls="RVInstR<0b$(bin 7 "$F7"), 0b$(bin 3 "$F3"), OPC_CUSTOM_$slot, $outs, (ins $ins), \"$MN\", \"$argstr\">";;
     R4) cls="RVInstR4<0b$(bin 2 "$F2"), 0b$(bin 3 "$F3"), OPC_CUSTOM_$slot, $outs, (ins $ins), \"$MN\", \"$argstr\">";;
     I)  cls="RVInstI<0b$(bin 3 "$F3"), OPC_CUSTOM_$slot, $outs, (ins $ins), \"$MN\", \"$argstr\">";;
+    S)  cls="RVInstS<0b$(bin 3 "$F3"), OPC_CUSTOM_$slot, $outs, (ins $ins), \"$MN\", \"$argstr\">";;
+    B)  cls="RVInstB<0b$(bin 3 "$F3"), OPC_CUSTOM_$slot, $outs, (ins $ins), \"$MN\", \"$argstr\">";;
+    U)  cls="RVInstU<OPC_CUSTOM_$slot, $outs, (ins $ins), \"$MN\", \"$argstr\">";;
+    J)  cls="RVInstJ<OPC_CUSTOM_$slot, $outs, (ins $ins), \"$MN\", \"$argstr\">";;
   esac
+  case $FMT in B|J) props="hasSideEffects = 0, mayLoad = 0, mayStore = 0, isBranch = 1, isTerminator = 1";; esac
+  if [ "$MEMORY" = yes ]; then props="hasSideEffects = 1, mayLoad = 1, mayStore = 1"; iprops="IntrHasSideEffects"; fi
+  [ -z "$attr" ] || iprops="$iprops, $attr"
   {
     echo "// $MN: include from RISCVInstrInfo.td. Written against the LLVM 17+ RISCVInstrFormats.td"
     echo "// class signatures; add a subtarget feature predicate (RISCVFeatures.td, RISCV.td) by hand."
-    echo "let hasSideEffects = 0, mayLoad = 0, mayStore = 0${zero:+, $zero} in"
+    echo "let $props$zero in"
     echo "def $U : $cls, Sched<[]>;"
-    echo
-    echo "// IntrinsicsRISCV.td:"
-    echo "//   def int_riscv_$sym : Intrinsic<[llvm_anyint_ty], [$tys], [IntrNoMem]>;"
-    echo "// RISCVInstrInfo.td pattern:"
-    echo "//   def : Pat<(int_riscv_$sym $pat), ($U $(printf '%s' "$pat" | sed 's/,  */, /g'))>;"
+    case $FMT in
+      B|J) ;;
+      *)
+        echo
+        echo "// IntrinsicsRISCV.td:"
+        echo "//   def int_riscv_$sym : Intrinsic<$ret, [$tys], [$iprops]>;"
+        echo "// RISCVInstrInfo.td pattern:"
+        if has_op rd; then
+          echo "//   def : Pat<(int_riscv_$sym $pat), ($U $pargs)>;"
+        else
+          echo "//   def : Pat<(int_riscv_$sym $pat), ($U $pargs)>;   // no result: match the void call"
+        fi;;
+    esac
   } | emit "RISCVInstr$U.td"
-}
-
-bin() {  # bin WIDTH VALUE -> zero-padded binary
-  local w=$1 v=$(($2)) out="" i
-  for ((i = w - 1; i >= 0; i--)); do out="$out$(((v >> i) & 1))"; done
-  echo "$out"
 }
 
 # ── backend: spike (extension plugin, no simulator rebuild) ────────
 
 be_spike() {
   BE=spike
-  [ "$FMT" = S ] && { skip "S-type needs MMU access; write it by hand"; return; }
-  local sym o immx="0" body args="" fn fns=""
+  case $FMT in J) ;; *) need_sem || return 0;; esac
+  local sym o immx="0" body args="" fn fns="" k
   sym=$(symof "$MN"); fn="custom_$sym"
-  case $FMT in I) immx="insn.i_imm()";; U) immx="insn.u_imm()";; B) immx="insn.sb_imm()";; J) immx="insn.uj_imm()";; esac
+  case $FMT in I) immx="insn.i_imm()";; S) immx="insn.s_imm()";; U) immx="insn.u_imm()";; B) immx="insn.sb_imm()";; J) immx="insn.uj_imm()";; esac
   body="  reg_t rs1 = RS1, rs2 = RS2, rs3 = RS3; sreg_t imm = $immx;
   (void) rs1; (void) rs2; (void) rs3; (void) imm;"
   case $FMT in
@@ -539,8 +640,12 @@ be_spike() {
     J) body="$body
   WRITE_RD(pc + 4);
   return pc + imm;";;
+    S) body="$body
+  MMU.store<uint${WIDTH}_t>(rs1 + imm, (uint${WIDTH}_t) ($SEM));
+  return pc + 4;";;
     *) if has_op rd; then body="$body
-  WRITE_RD($SEM);"; fi
+  WRITE_RD($SEM);"; else body="$body
+  (void) ($SEM);"; fi
        body="$body
   return pc + 4;";;
   esac
@@ -550,7 +655,7 @@ be_spike() {
     esac
     args="$args${args:+, }&$o"
   done
-  local k; fns="$fn"; for k in 2 3 4 5 6 7 8; do fns="$fns, $fn"; done
+  fns="$fn"; for k in 2 3 4 5 6 7 8; do fns="$fns, $fn"; done
   RKEYS="MN SYM FN FNS MATCH MASK IMMX BODY ARGS"
   V_MN=$MN V_SYM=$sym V_FN=$fn V_FNS=$fns V_MATCH=$(hex8 "$MATCH") V_MASK=$(hex8 "$MASK")
   V_IMMX=$immx V_BODY=$body V_ARGS=$args
@@ -597,16 +702,17 @@ EOF
 
 be_qemu() {
   BE=qemu
-  case $FMT in R|R4|I|U) ;; *) skip "format $FMT"; return;; esac
-  local sym pat="" b fields="" defs="" o ins="" extra="" get="" call="" sig="" nargs=0 g bitstr
+  case $FMT in J) ;; *) need_sem || return 0;; esac
+  local sym pat="" b fields="" defs="" o extra="" get="" sig="" nargs=0 g bitstr immf mo helper=1
   sym=$(symof "$MN")
   for ((b = 31; b >= 0; b--)); do
     if [ $(((MASK >> b) & 1)) -eq 1 ]; then pat="$pat$(((MATCH >> b) & 1))"; else pat="$pat."; fi
   done
   bitstr="${pat:0:7} ${pat:7:5} ${pat:12:5} ${pat:17:3} ${pat:20:5} ${pat:25:7}"
+  case $FMT in I) immf=imm_i;; S) immf=imm_s;; B) immf=imm_b;; U) immf=imm_u;; J) immf=imm_j;; esac
   for o in $OPS; do
     case $o in
-      imm) case $FMT in I) fields="$fields imm=%imm_i";; U) fields="$fields imm=%imm_u";; esac;;
+      imm) fields="$fields imm=%$immf";;
       *) fields="$fields %$o";;
     esac
     defs="$defs $o"
@@ -621,16 +727,19 @@ be_qemu() {
     fi
     nargs=$((nargs + 1))
   done
+  case $WIDTH in 8) mo=MO_UB;; 16) mo=MO_UW;; 32) mo=MO_UL;; 64) mo=MO_UQ;; esac
   {
     echo "# append to target/riscv/insn32.decode"
     echo "&$sym$defs"
     echo "@$sym ....... ..... ..... ... ..... ....... &$sym$fields"
     echo "$sym $bitstr @$sym"
   } | emit "insn32.decode.add"
-  RKEYS="SYM GET EXTRA"
-  V_SYM=$sym V_GET=$get V_EXTRA=$extra
-  export RKEYS V_SYM V_GET V_EXTRA
-  render <<'EOF' | emit "trans_${sym}.c.inc"
+  RKEYS="SYM GET EXTRA MO"
+  V_SYM=$sym V_GET=$get V_EXTRA=$extra V_MO=$mo
+  export RKEYS V_SYM V_GET V_EXTRA V_MO
+  case $FMT in
+    R|R4|I|U)
+      render <<'EOF' | emit "trans_${sym}.c.inc"
 /* include from target/riscv/translate.c; tcg_env is cpu_env before QEMU 9.0 */
 static bool trans_@SYM@(DisasContext *ctx, arg_@SYM@ *a)
 {
@@ -640,35 +749,86 @@ static bool trans_@SYM@(DisasContext *ctx, arg_@SYM@ *a)
     return true;
 }
 EOF
-  printf 'DEF_HELPER_%d(%s, tl, env%s)\n' $((nargs + 1)) "$sym" "$(for ((g = 0; g < nargs; g++)); do printf ', tl'; done)" |
-    emit "helper.h.add"
-  printf 'target_ulong helper_%s(CPURISCVState *env%s)\n{\n    return %s;\n}\n' "$sym" "$sig" "$SEM" |
-    emit "op_helper.c.add"
+      ;;
+    S)
+      render <<'EOF' | emit "trans_${sym}.c.inc"
+/* include from target/riscv/translate.c; tcg_env is cpu_env before QEMU 9.0 */
+static bool trans_@SYM@(DisasContext *ctx, arg_@SYM@ *a)
+{
+    TCGv addr = get_address(ctx, a->rs1, a->imm);
+    TCGv val = tcg_temp_new();
+@GET@    gen_helper_@SYM@(val, tcg_env@EXTRA@);
+    tcg_gen_qemu_st_tl(val, addr, ctx->mem_idx, MO_TE | @MO@);
+    return true;
+}
+EOF
+      ;;
+    B)
+      render <<'EOF' | emit "trans_${sym}.c.inc"
+/* include from target/riscv/translate.c; tcg_env is cpu_env before QEMU 9.0 */
+static bool trans_@SYM@(DisasContext *ctx, arg_@SYM@ *a)
+{
+    TCGLabel *taken = gen_new_label();
+    TCGv cond = tcg_temp_new();
+@GET@    gen_helper_@SYM@(cond, tcg_env@EXTRA@);
+    tcg_gen_brcondi_tl(TCG_COND_NE, cond, 0, taken);
+    gen_goto_tb(ctx, 1, ctx->pc_succ_insn);
+    gen_set_label(taken);
+    gen_goto_tb(ctx, 0, ctx->base.pc_next + a->imm);
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+EOF
+      ;;
+    J)
+      helper=0
+      render <<'EOF' | emit "trans_${sym}.c.inc"
+/* include from target/riscv/translate.c after trans_rvi.c.inc (uses gen_jal) */
+static bool trans_@SYM@(DisasContext *ctx, arg_@SYM@ *a)
+{
+    return gen_jal(ctx, a->rd, a->imm);
+}
+EOF
+      ;;
+  esac
+  if [ $helper -eq 1 ]; then
+    printf 'DEF_HELPER_%d(%s, tl, env%s)\n' $((nargs + 1)) "$sym" "$(for ((g = 0; g < nargs; g++)); do printf ', tl'; done)" |
+      emit "helper.h.add"
+    printf 'target_ulong helper_%s(CPURISCVState *env%s)\n{\n    return %s;\n}\n' "$sym" "$sig" "$SEM" |
+      emit "op_helper.c.add"
+  fi
 }
 
 # ── backend: customasm ─────────────────────────────────────────────
 
 be_customasm() {
   BE=customasm
-  case $FMT in R|R4|I|U) ;; *) skip "format $FMT"; return;; esac
-  local sym enc args="" o i
+  local sym enc args="" o i t f3b r off="" body im
   sym=$(symof "$MN")
-  z() { has_op "$1" && echo "$1" || echo "0b00000"; }
-  case $FMT in
-    R)  enc="0b$(bin 7 "$F7") @ $(z rs2) @ $(z rs1) @ 0b$(bin 3 "$F3") @ $(z rd)";;
-    R4) enc="$(z rs3) @ 0b$(bin 2 "$F2") @ $(z rs2) @ $(z rs1) @ 0b$(bin 3 "$F3") @ $(z rd)";;
-    I)  has_op imm && im="imm[11:0]" || im="0b000000000000"
-        enc="$im @ $(z rs1) @ 0b$(bin 3 "$F3") @ $(z rd)";;
-    U)  has_op imm && im="imm[19:0]" || im="0b00000000000000000000"
-        enc="$im @ $(z rd)";;
-  esac
-  enc="$enc @ 0b$(bin 7 "$OPC")"
+  z() { if has_op "$1"; then echo "$1"; else echo "0b00000"; fi; }
+  f3b="0b$(bin 3 "$F3")"
   for o in $OPS; do
     case $o in
-      imm) t=$([ "$FMT" = I ] && echo i12 || echo u20); args="$args${args:+, }{imm: $t}";;
+      imm) case $FMT in I|S) t=i12;; U) t=u20;; B|J) t=u32;; esac
+           case $FMT in B|J) args="$args${args:+, }{target: $t}";; *) args="$args${args:+, }{imm: $t}";; esac;;
       *) args="$args${args:+, }{$o: reg}";;
     esac
   done
+  case $FMT in
+    R)  enc="0b$(bin 7 "$F7") @ $(z rs2) @ $(z rs1) @ $f3b @ $(z rd)";;
+    R4) enc="$(z rs3) @ 0b$(bin 2 "$F2") @ $(z rs2) @ $(z rs1) @ $f3b @ $(z rd)";;
+    I)  if has_op imm; then im="imm[11:0]"; else im="0b000000000000"; fi
+        enc="$im @ $(z rs1) @ $f3b @ $(z rd)";;
+    S)  if has_op imm; then enc="imm[11:5] @ $(z rs2) @ $(z rs1) @ $f3b @ imm[4:0]"
+        else enc="0b0000000 @ $(z rs2) @ $(z rs1) @ $f3b @ 0b00000"; fi;;
+    B)  off="off = target - pc"
+        enc="off[12:12] @ off[10:5] @ $(z rs2) @ $(z rs1) @ $f3b @ off[4:1] @ off[11:11]";;
+    U)  if has_op imm; then im="imm[19:0]"; else im="0b00000000000000000000"; fi
+        enc="$im @ $(z rd)";;
+    J)  off="off = target - pc"
+        enc="off[20:20] @ off[10:1] @ off[11:11] @ off[19:12] @ $(z rd)";;
+  esac
+  enc="$enc @ 0b$(bin 7 "$OPC")"
   {
     echo "#subruledef reg"
     echo "{"
@@ -677,7 +837,14 @@ be_customasm() {
     echo
     echo "#ruledef"
     echo "{"
-    echo "    $MN $args => $enc"
+    if [ -n "$off" ]; then
+      echo "    $MN $args => {"
+      echo "        $off"
+      echo "        $enc"
+      echo "    }"
+    else
+      echo "    $MN $args => $enc"
+    fi
     echo "}"
   } | emit "$sym.asm"
 }
@@ -701,6 +868,155 @@ be_opcodes() {
     I|S|B) fixed="$fixed 14..12=$F3";;
   esac
   printf '%s%s %s\n' "$MN" "$tail" "$fixed" | emit "rv_custom"
+}
+
+# ── backend: renode (custom instruction handler, no rebuild) ───────
+
+be_renode() {
+  BE=renode
+  case $FMT in R|R4|I|U) ;; *) skip "format $FMT (needs PC/bus access)"; return;; esac
+  need_sem || return 0
+  local b bits="" ch py="" o
+  for ((b = 31; b >= 0; b--)); do
+    if [ $(((MASK >> b) & 1)) -eq 1 ]; then bits="$bits$(((MATCH >> b) & 1))"; continue; fi
+    ch=x
+    case $FMT in R4) if [ $b -ge 27 ]; then ch=c; fi;; esac
+    case $FMT in I) if [ $b -ge 20 ]; then ch=i; fi;; U) if [ $b -ge 12 ]; then ch=i; fi;; esac
+    if [ $b -ge 20 ] && [ $b -le 24 ] && [ "$FMT" != I ] && [ "$FMT" != U ]; then ch=b; fi
+    if [ $b -ge 15 ] && [ $b -le 19 ] && [ "$FMT" != U ]; then ch=a; fi
+    if [ $b -ge 7 ] && [ $b -le 11 ]; then ch=d; fi
+    bits="$bits$ch"
+  done
+  for o in rs1 rs2 rs3; do
+    if has_op $o; then py="$py$o = cpu.GetRegister((instruction >> $(reg_shift $o)) & 31).RawValue; "; fi
+  done
+  case $FMT in
+    I) if has_op imm; then py="${py}imm = (((instruction >> 20) & 4095) ^ 2048) - 2048; "; fi;;
+    U) if has_op imm; then py="${py}imm = (instruction >> 12) & 1048575; "; fi;;
+  esac
+  if has_op rd; then
+    py="${py}cpu.SetRegister((instruction >> 7) & 31, ($SEMPY) & 0xFFFFFFFFFFFFFFFF)"
+  else
+    py="${py}res = ($SEMPY)"
+  fi
+  printf '# RV64 hart; add to a .resc after the machine is created\nsysbus.cpu InstallCustomInstructionHandlerFromString "%s" "%s"\n' "$bits" "$py" |
+    emit "$(symof "$MN").resc"
+}
+
+# ── backend: sail (sail-riscv model) ───────────────────────────────
+
+be_sail() {
+  BE=sail
+  case $FMT in R|R4|I|U|S) ;; *) skip "format $FMT"; return;; esac
+  if [ -z "$SEMSAIL" ]; then skip "needs semantics_sail (Sail expression over X(rs1) ..., e.g. X(rs1) + X(rs2))"; return; fi
+  local U types="" names="" enc="" asm="" o first=1 rd0="0b00000" ex
+  U=$(upper "$(symof "$MN")")
+  reg() { if has_op "$1"; then echo "encdec_reg($1)"; else echo "0b00000"; fi; }
+  # union tuple: immediate first, then registers from rs3 down to rd
+  if has_op imm; then
+    case $FMT in
+      I) types="bits(12)"; names="imm";;
+      U) types="bits(20)"; names="imm";;
+      S) types="bits(12)"; names="imm7 @ imm5";;
+    esac
+  fi
+  for o in rs3 rs2 rs1 rd; do
+    if has_op $o; then types="$types${types:+, }regidx"; names="$names${names:+, }$o"; fi
+  done
+  case $FMT in
+    R)  enc="0b$(bin 7 "$F7") @ $(reg rs2) @ $(reg rs1) @ 0b$(bin 3 "$F3") @ $(reg rd)";;
+    R4) enc="$(reg rs3) @ 0b$(bin 2 "$F2") @ $(reg rs2) @ $(reg rs1) @ 0b$(bin 3 "$F3") @ $(reg rd)";;
+    I)  if has_op imm; then enc="imm"; else enc="0x000"; fi
+        enc="$enc @ $(reg rs1) @ 0b$(bin 3 "$F3") @ $(reg rd)";;
+    U)  if has_op imm; then enc="imm"; else enc="0x00000"; fi
+        enc="$enc @ $(reg rd)";;
+    S)  enc="imm7 @ $(reg rs2) @ $(reg rs1) @ 0b$(bin 3 "$F3") @ imm5";;
+  esac
+  enc="$enc @ 0b$(bin 7 "$OPC")"
+  for o in $OPS; do
+    if [ $first -eq 1 ]; then first=0; else asm="$asm ^ sep()"; fi
+    case $o in
+      imm) case $FMT in U) asm="$asm ^ hex_bits_20(imm)";; S) asm="$asm ^ hex_bits_signed_12(imm7 @ imm5)";; *) asm="$asm ^ hex_bits_signed_12(imm)";; esac;;
+      *) asm="$asm ^ reg_name($o)";;
+    esac
+  done
+  if [ "$FMT" = S ] && has_op imm && has_op rs1; then
+    asm=""
+    for o in $OPS; do
+      case $o in
+        imm) ;;
+        rs1) ;;
+        *) asm="$asm${asm:+ ^ sep() ^ }reg_name($o)";;
+      esac
+    done
+    asm="$asm ^ sep() ^ hex_bits_signed_12(imm7 @ imm5) ^ \"(\" ^ reg_name(rs1) ^ \")\""
+  fi
+  RKEYS="MN U TYPES NAMES ENC ASM RD SEM"
+  V_MN=$MN V_U=$U V_TYPES=$types V_NAMES=$names V_ENC=$enc V_ASM=${asm# ^ } V_RD=X V_SEM=$SEMSAIL
+  export RKEYS V_MN V_U V_TYPES V_NAMES V_ENC V_ASM V_RD V_SEM
+  if [ "$FMT" = S ]; then
+    ex="  let offset : xlenbits = sign_extend(imm7 @ imm5);
+  let value : xlenbits = $SEMSAIL;
+  let data = value[$((WIDTH - 1)) .. 0];
+  match vmem_write(rs1, offset, $((WIDTH / 8)), data, Store(Data), false, false, false) {
+    Ok(_) => RETIRE_SUCCESS,
+    Err(e) => e,
+  }"
+    V_SEM=$ex; export V_SEM
+    say "$BE: S-type execute follows the STORE clause of the current sail-riscv (vmem_write); check names against your model revision"
+  fi
+  {
+    echo "// $MN: add to a new file, list it in riscv.sail_project after the extension it depends on."
+    echo "union clause instruction = @U@_INSN : (@TYPES@)"
+    echo
+    echo "mapping clause encdec = @U@_INSN(@NAMES@)"
+    echo "  <-> @ENC@"
+    echo
+    echo "mapping clause assembly = @U@_INSN(@NAMES@)"
+    echo "  <-> \"@MN@\" ^ spc() ^ @ASM@"
+    echo
+    echo "function clause execute @U@_INSN(@NAMES@) = {"
+    if [ "$FMT" = S ]; then
+      echo "@SEM@"
+    else
+      echo "  @RD@(rd) = @SEM@;"
+      echo "  RETIRE_SUCCESS"
+    fi
+    echo "}"
+  } | render | emit "$(symof "$MN").sail"
+}
+
+# ── backend: gem5 (ISA decoder entry) ──────────────────────────────
+
+be_gem5() {
+  BE=gem5
+  case $FMT in R4) skip "R4-type"; return;; J) ;; *) need_sem || return 0;; esac
+  local opc5 fmt code pre ea mem
+  opc5=$(printf '0x%02x' $((OPC >> 2)))
+  pre="uint64_t rs1 = Rs1, rs2 = Rs2; (void) rs1; (void) rs2;"
+  case $WIDTH in 8) mem=Mem_ub;; 16) mem=Mem_uh;; 32) mem=Mem_uw;; 64) mem=Mem_ud;; esac
+  case $FMT in
+    R) code="ROp::$(symof "$MN")({{ $pre Rd = $SEM; }});";;
+    I) code="IOp::$(symof "$MN")({{ $pre Rd = $SEM; }});";;
+    U) code="UOp::$(symof "$MN")({{ Rd = $SEM; }});";;
+    S) code="SOp::$(symof "$MN")({{ $pre $mem = $SEM; }}, {{ EA = Rs1 + imm; }});";;
+    B) code="BOp::$(symof "$MN")({{ $pre if ($SEM) NPC = PC + imm; else NPC = NPC; }}, IsDirectControl, IsCondControl);";;
+    J) code="JOp::$(symof "$MN")({{ Rd = NPC; NPC = PC + imm; }}, IsDirectControl, IsUncondControl, IsCall);";;
+  esac
+  {
+    echo "// src/arch/riscv/isa/decoder.isa: merge into the existing OPCODE5 $opc5 block if there is one"
+    case $FMT in
+      U|J) echo "$opc5: $code";;
+      R) echo "$opc5: decode FUNCT3 {"
+         echo "    $(printf '%s' "$(printf '0x%x' "$F3")"): decode FUNCT7 {"
+         echo "        $(printf '0x%02x' "$F7"): $code"
+         echo "    }"
+         echo "}";;
+      *) echo "$opc5: decode FUNCT3 {"
+         echo "    $(printf '0x%x' "$F3"): $code"
+         echo "}";;
+    esac
+  } | emit "decoder.isa.add"
 }
 
 # ── patch engine (awk anchors, no sed -i, idempotent, .bak once) ───
@@ -732,27 +1048,28 @@ patch_present() {  # every real line of the block already in the file?
 }
 
 patch_apply() {  # tree id file kind text pos
-  local tree=$1 id=$2 file=$3 kind=$4 text=$5 pos=$6 target res idx at tmp blk lo hi
+  local tree=$1 id=$2 file=$3 kind=$4 text=$5 pos=$6 target res idx at tmp blk lo hi ans
   target="$tree/$file"; blk="$PDIR/$id.block"
-  if [ ! -f "$target" ]; then echo "  FAIL  $id  missing $target"; PATCH_FAILS=$((PATCH_FAILS + 1)); return; fi
-  if patch_present "$target" "$blk"; then echo "  SKIP  $id  already applied in $file"; return; fi
+  if [ ! -f "$target" ]; then echo "  FAIL  $id  missing $target"; PATCH_FAILS=$((PATCH_FAILS + 1)); return 0; fi
+  if patch_present "$target" "$blk"; then echo "  SKIP  $id  already applied in $file"; return 0; fi
   if ! res=$(patch_find "$target" "$kind" "$text" "$pos"); then
-    echo "  FAIL  $id  anchor '$text' not found in $file"; PATCH_FAILS=$((PATCH_FAILS + 1)); return
+    echo "  FAIL  $id  anchor '$text' not found in $file"; PATCH_FAILS=$((PATCH_FAILS + 1)); return 0
   fi
   idx=${res% *}; at=${res#* }
   lo=$((at > 2 ? at - 2 : 1)); hi=$((at + 2))
   echo "  --- $id  $file:$at ($pos)"
   sed -n "${lo},${hi}p" "$target" | sed 's/^/      | /'
   sed 's/^/      + /' "$blk"
-  if [ "$DRYRUN" -eq 1 ]; then echo "  DRY   $id"; return; fi
+  if [ "$DRYRUN" -eq 1 ]; then echo "  DRY   $id"; return 0; fi
   if [ "$YES" -ne 1 ]; then
     printf '  apply? [y/N] '
+    ans=n
     { read -r ans </dev/tty; } 2>/dev/null || ans=n
-    case $ans in y|Y) ;; *) echo "  SKIP  $id  declined"; return;; esac
+    case $ans in y|Y) ;; *) echo "  SKIP  $id  declined"; return 0;; esac
   fi
   [ -f "$target.bak" ] || cp -p "$target" "$target.bak"
   tmp=$(mktemp)
-  [ -n "$(tail -c1 "$target")" ] && printf '\n' >> "$target"
+  if [ -n "$(tail -c1 "$target")" ]; then printf '\n' >> "$target"; fi
   {
     head -n "$idx" "$target"
     if head -n1 "$target" | od -An -c | grep -q '\\r'; then awk '{ printf "%s\r\n", $0 }' "$blk"; else cat "$blk"; fi
@@ -765,11 +1082,12 @@ patch_apply() {  # tree id file kind text pos
 version_gate() {  # version_gate KIND
   local v=""
   case $1 in
-    binutils) [ -f "$TREE/binutils/bfd/version.m4" ] &&
+    binutils) if [ -f "$TREE/binutils/bfd/version.m4" ]; then
                 v=$(sed -n 's/.*\[\([0-9][0-9.]*\)\].*/\1/p' "$TREE/binutils/bfd/version.m4" | head -n1)
+              fi
               say "binutils version: ${v:-?} (validated: 2.46)"
               case $v in 2.46*) ;; *) [ "$FORCE" -eq 1 ] || die "unvalidated binutils version; anchors may not match. Use --force to try anyway.";; esac;;
-    gcc)      [ -f "$TREE/gcc/gcc/BASE-VER" ] && v=$(head -n1 "$TREE/gcc/gcc/BASE-VER" | tr -d '\r')
+    gcc)      if [ -f "$TREE/gcc/gcc/BASE-VER" ]; then v=$(head -n1 "$TREE/gcc/gcc/BASE-VER" | tr -d '\r'); fi
               say "gcc version: ${v:-?} (validated: 15.2)"
               case $v in 15.2*) ;; *) [ "$FORCE" -eq 1 ] || die "unvalidated gcc version; anchors may not match. Use --force to try anyway.";; esac;;
   esac
@@ -789,12 +1107,12 @@ apply_list() {  # apply_list BACKEND
 # ── verify against a real installed toolchain ──────────────────────
 
 do_verify() {
-  local bin="$1/bin/$TRIPLE" AS OD GCC src obj want got line ops="" o t="" asmline
+  local bin="$1/bin/$TRIPLE" AS OD GCC src obj want got o ops="" asmline v
   AS="$bin-as"; OD="$bin-objdump"; GCC="$bin-gcc"
   [ -x "$AS" ] || [ -x "$AS.exe" ] || die "no assembler at $AS"
   for o in $OPS; do
-    case $o in rd) t=a3;; rs1) t=a0;; rs2) t=a1;; rs3) t=a2;; imm) t=8;; esac
-    ops="$ops $o=$([ "$o" = imm ] && echo 8 || case $o in rd) echo 13;; rs1) echo 10;; rs2) echo 11;; rs3) echo 12;; esac)"
+    case $o in rd) v=13;; rs1) v=10;; rs2) v=11;; rs3) v=12;; imm) v=8;; esac
+    ops="$ops $o=$v"
   done
   want=$(do_encode "$(echo $ops | tr ' ' ',')")
   case $FMT in
@@ -826,6 +1144,40 @@ do_verify() {
   fi
 }
 
+# ── one instruction, start to finish ───────────────────────────────
+
+ALL_BACKENDS="insn binutils gcc llvm spike qemu customasm opcodes renode sail gem5"
+
+run_one() {
+  normalise
+  allocate
+  compute_enc
+  say "$MN  $FMT-type  MATCH=$(hex8 "$MATCH")  MASK=$(hex8 "$MASK")  operands: $OPS"
+  if [ -n "$ENCODE" ]; then do_encode "$ENCODE"; return 0; fi
+
+  local b
+  for b in $BACKENDS; do "be_$b"; done
+  mkdir -p "$OUT/$MN"
+  {
+    echo "mnemonic=$MN"; echo "format=$FMT"; echo "opcode=$(printf '0x%02x' "$OPC")"
+    case $FMT in R|I|S|B|R4) echo "funct3=$F3";; esac
+    if [ "$FMT" = R ]; then echo "funct7=$F7"; fi
+    if [ "$FMT" = R4 ]; then echo "funct2=$F2"; fi
+    echo "operands=$(echo $OPS | tr ' ' ',')"
+    if [ -n "$SEM" ]; then echo "semantics=$SEM"; fi
+    if [ "$SEMPY" != "$SEM" ]; then echo "semantics_py=$SEMPY"; fi
+    if [ -n "$SEMSAIL" ]; then echo "semantics_sail=$SEMSAIL"; fi
+    echo "width=$WIDTH"; echo "memory=$MEMORY"
+  } > "$OUT/$MN/spec"
+  say "spec (reusable): $OUT/$MN/spec"
+
+  if [ "$APPLY" -eq 1 ]; then
+    for b in $BACKENDS; do case $b in binutils|gcc) apply_list "$b";; esac; done
+    [ "$PATCH_FAILS" -eq 0 ] || die "$PATCH_FAILS edit(s) failed"
+  fi
+  if [ -n "$VERIFY" ]; then do_verify "$VERIFY"; fi
+}
+
 # ── main ───────────────────────────────────────────────────────────
 
 usage() { sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
@@ -836,12 +1188,14 @@ SPEC_FILE= APPLY=0 YES=0 DRYRUN=0 FORCE=0 ENCODE= VERIFY=
 while [ $# -gt 0 ]; do
   case $1 in
     -h|--help) usage; exit 0;;
-    --mnemonic|--format|--opcode|--funct3|--funct7|--funct2|--operands|--semantics|--backend|--tree|--out|--encode|--verify|--triple)
+    --mnemonic|--format|--opcode|--funct3|--funct7|--funct2|--operands|--semantics|--semantics-py|--semantics-sail|--width|--memory|--backend|--tree|--out|--encode|--verify|--triple)
       [ $# -ge 2 ] || die "$1 needs a value"
       case $1 in
         --mnemonic) C_MN=$2;; --format) C_FMT=$2;; --opcode) C_OPC=$2;;
         --funct3) C_F3=$2;; --funct7) C_F7=$2;; --funct2) C_F2=$2;;
         --operands) C_OPS=$(printf '%s' "$2" | tr ',' ' ');; --semantics) C_SEM=$2;;
+        --semantics-py) C_SEMPY=$2;; --semantics-sail) C_SEMSAIL=$2;;
+        --width) C_WIDTH=$2;; --memory) C_MEM=$2;;
         --backend) BACKENDS=$2;; --tree) TREE=$2;; --out) OUT=$2;;
         --encode) ENCODE=$2;; --verify) VERIFY=$2;; --triple) TRIPLE=$2;;
       esac
@@ -855,45 +1209,34 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -z "$SPEC_FILE" ] || load_spec_file "$SPEC_FILE"
-[ -z "$C_MN" ]  || MN=$C_MN
-[ -z "$C_FMT" ] || FMT=$C_FMT
-[ -z "$C_OPC" ] || OPC_IN=$C_OPC
-[ -z "$C_F3" ]  || F3=$C_F3
-[ -z "$C_F7" ]  || F7=$C_F7
-[ -z "$C_F2" ]  || F2=$C_F2
-[ -z "$C_OPS" ] || OPS=$C_OPS
-[ -z "$C_SEM" ] || SEM=$C_SEM
-normalise
 TREE=$(cd "$TREE" 2>/dev/null && pwd) || die "tree not found: $TREE"
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 
-load_existing
-allocate
-compute_enc
-
-say "$MN  $FMT-type  MATCH=$(hex8 "$MATCH")  MASK=$(hex8 "$MASK")  operands: $OPS"
-
-if [ -n "$ENCODE" ]; then do_encode "$ENCODE"; exit 0; fi
-
-if [ "$BACKENDS" = all ]; then BACKENDS="insn binutils gcc llvm spike qemu customasm opcodes"; fi
+if [ "$BACKENDS" = all ]; then BACKENDS=$ALL_BACKENDS; fi
 BACKENDS=$(printf '%s' "$BACKENDS" | tr ',' ' ')
 for b in $BACKENDS; do
-  case $b in insn|binutils|gcc|llvm|spike|qemu|customasm|opcodes) ;; *) die "unknown backend '$b'";; esac
+  case " $ALL_BACKENDS " in *" $b "*) ;; *) die "unknown backend '$b' (choose from: $ALL_BACKENDS)";; esac
 done
-for b in $BACKENDS; do "be_$b"; done
-mkdir -p "$OUT/$MN"
-{
-  echo "mnemonic=$MN"; echo "format=$FMT"; echo "opcode=$(printf '0x%02x' "$OPC")"
-  case $FMT in R|I|S|B) echo "funct3=$F3";; R4) echo "funct3=$F3";; esac
-  [ "$FMT" = R ] && echo "funct7=$F7"
-  [ "$FMT" = R4 ] && echo "funct2=$F2"
-  echo "operands=$(echo $OPS | tr ' ' ',')"; echo "semantics=$SEM"
-} > "$OUT/$MN/spec"
-say "spec (reusable): $OUT/$MN/spec"
 
-if [ "$APPLY" -eq 1 ]; then
-  for b in $BACKENDS; do case $b in binutils|gcc) apply_list "$b";; esac; done
-  [ "$PATCH_FAILS" -eq 0 ] || die "$PATCH_FAILS edit(s) failed"
+load_existing
+
+if [ -n "$SPEC_FILE" ] && [ -f "$SPEC_FILE" ] && grep -q '^---[[:space:]]*$' "$SPEC_FILE"; then
+  [ -z "$C_MN" ] || die "--mnemonic cannot be combined with a multi-instruction spec"
+  [ -z "$ENCODE" ] || die "--encode needs a single instruction"
+  CHUNKS=$(mktemp -d)
+  awk -v d="$CHUNKS" 'BEGIN { n = 1 } /^---[ \t\r]*$/ { n++; next } { print > (d "/spec." n) }' "$SPEC_FILE"
+  for f in "$CHUNKS"/spec.*; do
+    [ -s "$f" ] || continue
+    reset_spec
+    load_spec_file "$f"
+    apply_cli
+    run_one
+    echo
+  done
+  rm -rf "$CHUNKS"
+else
+  reset_spec
+  if [ -n "$SPEC_FILE" ]; then load_spec_file "$SPEC_FILE"; fi
+  apply_cli
+  run_one
 fi
-if [ -n "$VERIFY" ]; then do_verify "$VERIFY"; fi
