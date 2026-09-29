@@ -310,7 +310,7 @@ name, top-of-file comment shape, one deliberate deviation per file).
 * If you want to reproduce the *shape* of `demo/` for a different
   custom instruction, [`06-extending-toolchain.md`](06-extending-toolchain.md)
   is the recipe and [`10-scripts-pipeline.md`](10-scripts-pipeline.md)
-  documents the driver that executes it.
+  documents the injector that executes it.
 
 ---
 

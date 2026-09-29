@@ -38,7 +38,7 @@ top-to-bottom.
 | 07 | [`07-research-context.md`](07-research-context.md) | Supervisor | Related work, novelty claim, limitations, and future research directions. |
 | 08 | [`08-glossary.md`](08-glossary.md) | Undergraduate | Every acronym and term used in this repository, defined. |
 | 09 | [`09-demo-walkthrough.md`](09-demo-walkthrough.md) | Undergraduate | File-by-file walkthrough of `demo/` and `demo/failures/`. |
-| 10 | [`10-scripts-pipeline.md`](10-scripts-pipeline.md) | Researcher / Implementer | File-by-file reference for the `scripts/` generic pipeline. |
+| 10 | [`10-scripts-pipeline.md`](10-scripts-pipeline.md) | Researcher / Implementer | How the `scripts/inject.sh` injector works. |
 
 ---
 
@@ -77,9 +77,9 @@ reference material as you work.
 * The generic pipeline that *generalises* the recipe in
   [`06-extending-toolchain.md`](06-extending-toolchain.md) is
   implemented in [`../scripts/`](../scripts/) and documented
-  file-by-file in [`10-scripts-pipeline.md`](10-scripts-pipeline.md).
+  in [`10-scripts-pipeline.md`](10-scripts-pipeline.md).
   The two are kept consistent: any change to the recipe in doc 06
-  should also be reflected in `scripts/lib/snippets.py`.
+  should also be reflected in `scripts/inject.sh`.
 * Every concrete file path mentioned in [`04-patches-and-files.md`](04-patches-and-files.md)
   is verified against the actual contents of `../gcc/` and
   `../binutils/`. If you find a drift, please open an issue.

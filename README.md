@@ -101,19 +101,15 @@ chmod +x demo/verify_attn.sh
 
 ### 6. Add *another* custom instruction (optional)
 
-The `scripts/` directory is a generic pipeline that turns either a
-JSON config or a plain C file into a fully patched toolchain tree
-that recognises a *new* custom mnemonic. End-to-end recipe:
+`scripts/inject.sh` is a bash script (no Python; Linux, macOS, WSL, Git Bash)
+that turns one instruction spec into support for a *new* custom mnemonic in
+binutils, GCC, LLVM, Spike, QEMU, customasm and `.insn` form:
 
 ```bash
-# Sanity test (does NOT need a built toolchain — only the source tree):
-python3 scripts/tests/test_pipeline.py        # 7/7 should pass
-
-# Real use: from a JSON config (Way 1)
-python3 scripts/customrv.py from-config scripts/configs/fds.json --apply --build
-
-# Real use: from a C source file (Way 2 — recommended)
-python3 scripts/customrv.py from-c scripts/examples/fma_demo.c --apply --build
+bash scripts/tests/test_inject.sh                      # no toolchain needed
+scripts/inject.sh --mnemonic mac --format R4 --semantics "rs1 * rs2 + rs3"
+scripts/inject.sh spec.txt --backend binutils,gcc --apply
+scripts/inject.sh spec.txt --verify $HOME/riscv-install
 ```
 
 See [`scripts/README.md`](scripts/README.md) for the full surface.
@@ -167,13 +163,8 @@ CD/
 │   └── verify_attn.sh        ← end-to-end verification harness
 ├── scripts/                  ← generic “add a new custom RISC-V insn” pipeline
 │   ├── README.md
-│   ├── customrv.py           ← unified driver
-│   ├── 01_find_opcodes.py …  ← stage-by-stage helpers
-│   ├── configs/              ← Way-1 JSON configs (worked examples)
-│   ├── examples/             ← Way-2 C input files (worked examples)
-│   ├── lib/                  ← shared Python library (analyser, patcher, …)
-│   ├── templates/            ← matcher fragments + tree-ssa skeleton
-│   └── tests/                ← sanity tests + generated C tests
+│   ├── inject.sh             ← generic injector (bash)
+│   └── tests/                ← inject.sh self-check, attn contract test
 ├── gcc/                      ← upstream GCC 15.2 source tree (modified) — DO NOT TOUCH MANUALLY
 └── binutils/                 ← upstream binutils 2.46 source tree (modified) — DO NOT TOUCH MANUALLY
 ```
